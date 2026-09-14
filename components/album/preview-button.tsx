@@ -72,11 +72,22 @@ export function PreviewButton({ previewUrl, trackTitle, className }: PreviewButt
   /** Set by the `error` event, and one-way: a URL that failed once is expired, not flaky. */
   const [dead, setDead] = React.useState(false);
 
-  // The unmount pause. An empty dependency list because the ref is stable and the cleanup must
-  // run exactly once, when the row goes away.
+  /**
+   * The unmount pause, which matters because navigating away from a tracklist while a preview
+   * is playing would otherwise leave the audio running over the next page.
+   *
+   * THE ELEMENT IS CAPTURED INTO A LOCAL, not read off the ref inside the cleanup. A ref is a
+   * mutable box: by the time a cleanup runs React may already have detached the node and set
+   * `current` to null, so `audioRef.current?.pause()` is a silent no-op exactly when it is
+   * needed. Reading it once while the effect body runs — when the element is definitely mounted
+   * — is what makes the pause actually happen.
+   *
+   * An empty dependency list because this must run once per mount, not per render.
+   */
   React.useEffect(() => {
+    const audio = audioRef.current;
     return () => {
-      audioRef.current?.pause();
+      audio?.pause();
     };
   }, []);
 
