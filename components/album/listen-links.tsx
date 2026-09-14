@@ -92,11 +92,12 @@ export function ListenLinks({ artist, title, deezerUrl, services, heading = "Lis
                 <span className="text-faint">Search</span>
               )}
               <ExternalLink aria-hidden="true" />
-              <span className="sr-only">
-                {link.exact
-                  ? ` — ${title} on ${link.label}, opens in a new tab`
-                  : ` — search ${link.label} for ${artist} ${title}, opens in a new tab`}
-              </span>
+              {/*
+                The service name and the word Exact/Search are already in the accessible name,
+                so this adds only what the glyph says silently: the tab. Repeating the service
+                here would name it twice in one announcement.
+              */}
+              <span className="sr-only">, opens in a new tab</span>
             </a>
           </li>
         ))}

@@ -137,7 +137,9 @@ export function GuestBanner({
      */
     <div
       hidden={!offer}
-      className={cn("border-b border-line bg-amber/10", className, !offer && "hidden")}
+      // `bg-amber/12` is the same amber tint `AuthForm`'s guest notice and `Badge tone="amber"`
+      // use, so the two surfaces that talk to a guest about their session look like one thing.
+      className={cn("border-b border-line bg-amber/12", className, !offer && "hidden")}
     >
       <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 sm:px-6">
         <UserPlus className="size-4 shrink-0 text-amber" aria-hidden="true" />

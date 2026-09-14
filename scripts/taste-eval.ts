@@ -56,6 +56,7 @@ type Persona = {
    * generated, because the point is to be awkward in specific, nameable ways.
    */
   rate: (album: {
+    id: number;
     genres: string[];
     criticScore: number | null;
     criticVotes: number;
@@ -69,36 +70,77 @@ type Persona = {
 const clamp = (value: number) => Math.min(10, Math.max(1, Math.round(value)));
 const has = (genres: string[], ...want: string[]) => want.some((w) => genres.includes(w));
 
+/**
+ * A DETERMINISTIC per-album wobble, and the whole harness turned out to need it.
+ *
+ * THE MEASUREMENT THAT FORCED IT: the first version of these personas produced
+ * `spread` values of 0.00, 0.17, 0.00 and 0.28 for four of the ten, so FOUR PERSONAS WERE
+ * WITHHELD BY THE NO-VARIETY GATE and the harness only ever evaluated six. That is a defect in
+ * the fixture population rather than in the model — the gate was working perfectly, and a
+ * population where 40% of accounts are unreadable cannot tell you whether ranking is any good.
+ *
+ * Only `eval_flat` is SUPPOSED to be withheld; it is the account that proves the gate fires.
+ * Everybody else needs enough internal variance to be readable, because a real listener does
+ * not give the same score to everything inside a genre they like.
+ *
+ * Deterministic rather than random, for the same reason the seed's jitter is: re-running must
+ * produce the same output, or a change in the printed list means nothing.
+ */
+function wobble(username: string, albumId: number, amplitude: number): number {
+  let value = 2_166_136_261;
+  const input = `${username}:${albumId}`;
+  for (let index = 0; index < input.length; index += 1) {
+    value ^= input.charCodeAt(index);
+    value = Math.imul(value, 16_777_619);
+  }
+  // A signed integer in roughly [-amplitude, +amplitude].
+  return (((value >>> 0) % (amplitude * 2 + 1)) - amplitude) as number;
+}
+
 const PERSONAS: Persona[] = [
   {
     username: "eval_canon",
     note: "canon purist — rates the widely-admired high and everything else near the middle",
-    rate: (a) => (a.criticVotes > 0 && (a.criticScore ?? 0) >= 8 ? 10 : a.fans > 200_000 ? 8 : 5),
+    rate: (a) =>
+      clamp((a.criticVotes > 0 && (a.criticScore ?? 0) >= 8 ? 10 : a.fans > 200_000 ? 8 : 5) + wobble("canon", a.id, 1)),
   },
   {
     username: "eval_metal",
     note: "single-genre specialist (metal) — a lane so narrow the genre seed has almost no lean",
-    rate: (a) => (has(a.genres, "Metal", "Rock", "Alternative") ? clamp(8 + (a.fans > 100_000 ? 1 : 0)) : null),
+    rate: (a) =>
+      has(a.genres, "Metal", "Rock", "Alternative")
+        ? clamp(8 + (a.fans > 100_000 ? 1 : 0) + wobble("metal", a.id, 2))
+        : null,
   },
   {
     username: "eval_pop",
     note: "pop comfort listener — rates familiar things highly and never rates anything badly",
-    rate: (a) => (has(a.genres, "Pop", "R&B", "Dance") ? 9 : a.fans > 500_000 ? 8 : 7),
+    // Never rates anything BADLY, but is not indifferent within the range they use.
+    rate: (a) => clamp((has(a.genres, "Pop", "R&B", "Dance") ? 9 : a.fans > 500_000 ? 8 : 7) + Math.min(1, wobble("pop", a.id, 1))),
   },
   {
     username: "eval_contrarian",
     note: "contrarian — rates canonised classics LOW, which is the only account that exercises the INVERTED consensus alignment term",
-    rate: (a) => (a.criticVotes > 0 && (a.criticScore ?? 0) >= 8 ? 3 : a.fans < 50_000 ? 9 : 5),
+    rate: (a) =>
+      clamp((a.criticVotes > 0 && (a.criticScore ?? 0) >= 8 ? 3 : a.fans < 50_000 ? 9 : 5) + wobble("contrarian", a.id, 2)),
   },
   {
     username: "eval_flat",
     note: "flat rater — everything 7 or 8, so spread is near zero and the no-variety gate MUST fire",
-    rate: () => (Math.random() > 2 ? 8 : 7), // deterministic in practice: always 7
+    // LITERALLY CONSTANT, and the only persona that is. This account exists to prove the
+    // no-variety gate fires: a profile with no variance contains no preference, so no amount
+    // of volume should buy it a ranked list.
+    rate: () => 7,
   },
   {
     username: "eval_electronic",
     note: "electronic only — the artist axis should dominate the genre axis here",
-    rate: (a) => (has(a.genres, "Electro", "Dance") ? 9 : has(a.genres, "Alternative") ? 6 : null),
+    rate: (a) =>
+      has(a.genres, "Electro", "Dance")
+        ? clamp(9 + wobble("electronic", a.id, 2))
+        : has(a.genres, "Alternative")
+          ? clamp(6 + wobble("electronic", a.id, 2))
+          : null,
   },
   {
     username: "eval_tracksonly",
@@ -107,18 +149,28 @@ const PERSONAS: Persona[] = [
   },
   {
     username: "eval_albumsonly",
-    note: "rates only albums, never tracks — the mirror image, and the ordinary case",
-    rate: (a) => clamp(7 + (a.criticVotes > 0 ? ((a.criticScore ?? 7) - 7) / 2 : 0)),
+    note: "rates only albums, never tracks — the mirror image of the leaf-only account",
+    rate: (a) =>
+      clamp(7 + (a.criticVotes > 0 ? ((a.criticScore ?? 7) - 7) / 2 : 0) + wobble("albumsonly", a.id, 2)),
   },
   {
     username: "eval_completist",
     note: "completist of few artists — high support on a tiny artist set, which is what the shrinkage term is for",
-    rate: (a) => (["Radiohead", "Daft Punk", "Aphex Twin", "Kendrick Lamar"].includes(a.artistName) ? 9 : null),
+    rate: (a) =>
+      ["Radiohead", "Daft Punk", "Aphex Twin", "Kendrick Lamar"].includes(a.artistName)
+        ? clamp(9 + wobble("completist", a.id, 2))
+        : null,
   },
   {
     username: "eval_ordinary",
-    note: "an ordinary listener — broad, mildly positive, the control",
-    rate: (a) => clamp(7 + (a.fans > 300_000 ? 1 : 0) + (has(a.genres, "Jazz", "Folk") ? 1 : 0)),
+    note: "an ordinary listener — broad, opinionated within a genre, the control",
+    rate: (a) =>
+      clamp(
+        7 +
+          (a.fans > 300_000 ? 1 : 0) +
+          (has(a.genres, "Jazz", "Folk") ? 1 : 0) +
+          wobble("ordinary", a.id, 2),
+      ),
   },
 ];
 
@@ -323,12 +375,12 @@ async function main(): Promise<void> {
     );
     const topGenres = profile.genres
       .slice(0, 3)
-      .map((entry) => `${entry.key} ${entry.lean >= 0 ? "+" : ""}${entry.lean.toFixed(2)}/${entry.support}`)
+      .map((entry) => `${entry.label} ${entry.lean >= 0 ? "+" : ""}${entry.lean.toFixed(2)}/${entry.support}`)
       .join("  ");
     if (topGenres) console.info(`   genre leans: ${topGenres}`);
     const topArtists = profile.artists
       .slice(0, 3)
-      .map((entry) => `${entry.key} ${entry.lean >= 0 ? "+" : ""}${entry.lean.toFixed(2)}/${entry.support}`)
+      .map((entry) => `${entry.label} ${entry.lean >= 0 ? "+" : ""}${entry.lean.toFixed(2)}/${entry.support}`)
       .join("  ");
     if (topArtists) console.info(`   artist leans: ${topArtists}`);
 

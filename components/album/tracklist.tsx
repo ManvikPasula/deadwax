@@ -34,19 +34,18 @@
  *
  * The rejected alternative was a real table, which would buy free header association for the
  * popularity and duration columns. It costs more than it pays: every row carries a star
- * slider, a toggle button and a crown, so the cells are controls rather than data; the
- * popularity column disappears below `sm`, which a table's fixed column count has to be told
- * about twice; and a per-disc `<tbody>` with a spanning heading row is markup nobody can read.
- * A list of rows with one label row above them is the same information with none of that, and
- * it matches every other list in the app.
+ * slider, a toggle button and a crown that exists only at five stars, so the cells are
+ * controls of varying width rather than data; the popularity column disappears below `sm`,
+ * which a table's fixed column count has to be told about twice; and a per-disc `<tbody>` with
+ * a spanning heading row is markup nobody can read.
  *
- * The label row is `aria-hidden`: each control in the row below already carries its own name
- * ("Popularity 62 out of 100 …", "43 seconds long", "Your rating for Aerodynamic"), so
- * announcing five orphan words before the list would be the same information twice, in the
- * wrong order. The label row is the sighted reader's version of those names.
+ * WHICH ALSO MEANS THERE IS NO HEADER ROW — see the comment on the caption below. Every column
+ * in a row already carries its own accessible name ("Popularity 62 of 100 — streams, not
+ * ratings", "43 seconds long", "Your rating for Aerodynamic"), so the only column that needed
+ * a caption is the one whose meaning is genuinely not obvious, and it gets a sentence instead
+ * of a word.
  */
 
-import { Eyebrow } from "@/components/ui/primitives";
 import { TrackRow, type TrackRowTrack } from "@/components/album/track-row";
 import { albumTrackKey, trackKey, type ViewerLog } from "@/lib/db/queries/albums";
 import { cn } from "@/lib/utils";
@@ -143,14 +142,25 @@ export function Tracklist({
 
   return (
     <div className={cn("space-y-4", className)}>
-      {/* The column labels. See the docblock for why this is `aria-hidden`. */}
-      <div aria-hidden="true" className="flex items-center gap-x-3 border-b border-line pb-1.5">
-        <Eyebrow className="w-8 shrink-0">#</Eyebrow>
-        <Eyebrow className="min-w-0 flex-1">Track</Eyebrow>
-        {/* Hidden at the same breakpoint as the meter itself, so a bar never appears unlabelled. */}
-        <Eyebrow className="hidden w-16 shrink-0 sm:block">Pop.</Eyebrow>
-        <Eyebrow className="w-10 shrink-0 text-right">Time</Eyebrow>
-      </div>
+      {/*
+        THE ONE AMBIGUOUS COLUMN GETS A SENTENCE, NOT A COLUMN HEADER.
+
+        A header row was the first version and it is wrong here: the rows are flex, the title
+        column is `flex-1`, and every row carries a variable-width block of controls on its
+        right (stars, the tick, and a crown that exists only at five stars). So a header's
+        labels line up over the wrong pixels on every row whose controls differ from the last —
+        which is most of them. Aligning them would mean freezing the controls' width, which
+        means a wider gutter on every row of every album to caption one bar.
+        <p> once, above the list, says the same thing and cannot drift out of alignment.
+
+        The other columns need no caption: a locator, a title and a duration are self-evident,
+        and the star input, the tick and the crown each carry their own accessible name.
+      */}
+      <p className="hidden font-mono text-[0.6875rem] tracking-wider text-faint sm:block">
+        {/* `hidden sm:block` matches the meter's own breakpoint: below `sm` there are no bars,
+            and a caption for a column that is not on screen is a puzzle. */}
+        Bars are Deezer popularity — how much a track is streamed, not how it is rated.
+      </p>
 
       {groups.map((group) => (
         <section key={group.disc}>

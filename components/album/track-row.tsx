@@ -193,7 +193,16 @@ export function TrackRow({
           shifting the titles of every row above it. */}
       <span className="w-8 shrink-0 font-mono text-[0.6875rem] tabular text-faint">{shown}</span>
 
-      <PreviewButton previewUrl={track.previewUrl} trackTitle={track.title} />
+      {/*
+        A FIXED-WIDTH SLOT, HELD WHETHER OR NOT THERE IS A PREVIEW. `PreviewButton` renders
+        NOTHING when Deezer sent no clip — which is most rows on most records — and without a
+        reserved slot the title column would start 28px further right on the rows that do have
+        one. A tracklist whose titles zig-zag down the page reads as broken, and the cause
+        (a provider's coverage) is invisible.
+      */}
+      <span className="w-7 shrink-0">
+        <PreviewButton previewUrl={track.previewUrl} trackTitle={track.title} />
+      </span>
 
       <div className="min-w-0 flex-1">
         <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -235,10 +244,16 @@ export function TrackRow({
 
       {/*
         THE POPULARITY METER. Hidden below `sm` — it is the least important column in the row
-        and the first thing a phone should drop, and the column header above it is hidden at the
-        same breakpoint so a bar never appears without its label.
+        and the first thing a phone should drop. `Tracklist`'s caption ("bars are Deezer
+        popularity…") is hidden at the SAME breakpoint, so a bar never appears without its
+        explanation and the explanation never appears without a bar.
       */}
-      <div className="hidden w-16 shrink-0 sm:block">
+      <div
+        className="hidden w-16 shrink-0 sm:block"
+        // The pointer's copy of the bar's own `aria-label`. `Meter` hides an unlabelled bar
+        // from assistive technology and names a labelled one, so the two never disagree.
+        title={`Popularity ${track.popularity} of 100 — streams, not ratings`}
+      >
         <Meter
           ratio={meterPercent(track.popularity, 100) / 100}
           // NEUTRAL, never amber. Amber is the rating colour in this app, and a popularity bar
@@ -249,8 +264,11 @@ export function TrackRow({
       </div>
 
       <span className="w-10 shrink-0 text-right font-mono text-[0.6875rem] tabular text-faint">
+        {/* The word goes BEFORE the number, so this announces "Length 3:47" rather than
+            "3:47 long" — and `formatDuration` prints "—" for a missing duration, which needs
+            the label more than a real one does. */}
+        <span className="sr-only">Length </span>
         {formatDuration(track.durationMs)}
-        <span className="sr-only"> long</span>
       </span>
 
       {canWrite ? (
