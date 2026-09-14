@@ -23,10 +23,15 @@
 /**
  * One slot in three is drawn for the indie spotlight.
  *
- * INDIE GETS A THIRD OF ALL SLOTS, NOT A THIRD OF PAGES. On a two-unit page roughly 4/9 of
- * views carry no indie unit, 4/9 carry one and about 1/9 carry two; the long-run impression
- * share is exactly 1/3. That is the number the admin panel quotes to an operator, and it is
- * the number an independent artist is being sold.
+ * INDIE GETS A THIRD OF ALL SLOTS, NOT A THIRD OF PAGES, and the long-run impression share is
+ * 1/3. That share is the number the admin panel quotes to an operator, and it is the number an
+ * independent artist is being sold. It is the ONLY thing this constant promises.
+ *
+ * The source brief goes on to predict the per-page split as "4/9 no indie unit, 4/9 one, ~1/9
+ * two". MEASURED, THIS IMPLEMENTATION DOES NOT DO THAT — it is 1/3, 2/3, never — and the
+ * reason is a provable property of FNV-1a rather than a bug. The measurement, the proof and
+ * the decision not to change it are written out at `planKinds` below. Do not quote the 4/9
+ * figures at an operator.
  *
  * THE REJECTED ALTERNATIVE, which is the reason this constant is a probability and not a
  * floor: forcing "at least one indie slot on every page" reads like a guarantee and silently
