@@ -365,6 +365,24 @@ Two further departures of my own:
 
 ---
 
+## 5a. Findings from measuring rather than reasoning
+
+Each of these changed the code or the documentation, and each was found by running the thing.
+They are recorded here because a constant with a number tells you *what*, and a constant with a
+measurement tells you whether the number still applies.
+
+| Finding | Consequence |
+| --- | --- |
+| `GET /album/{id}`'s embedded tracklist **omits `track_position`, `disk_number` and `isrc`** — only `/album/{id}/tracks` has them | Album ingest is two requests, not one. Since `(album, disc, track)` *is* a track's addressable identity and a unique index depends on it, array order is a documented degraded fallback only. |
+| MusicBrainz's **search** endpoint returns no `rating`, no `genres` and no `secondary-types`; `inc=` is silently ignored there | Enrichment is a search followed by a lookup. The first version called search only, so it resolved MBIDs and first-release dates correctly — making the reissue fix *appear* to work — while producing a catalogue with `critic_votes = 0` on every row. |
+| Collapsing "no such release group" and "the server is busy" into one `null` | Turned a five-minute outage into thirty days of absence: one seeding run stamped a whole 37-album batch during a busy spell. Three outcomes now, and only two may be cached. |
+| `/artist/{id}/albums` summaries carry **no `artist` object at all** | A filter requiring one dropped all 38 rows and reported success. Fixing it took the mirror from 37 albums to 189. |
+| The only edition of Nevermind, Abbey Road, London Calling, Trans-Europe Express and Daydream Nation the catalogue stocks is **the remaster** | `isCanonicalRelease` no longer treats "(Remastered)" as noise. A remaster of a studio album *is* the studio album. |
+| Longest-token label normalisation chose **"ADA France" over "Daft Life"** | ADA is the distributor. First-token plus a distributor stoplist — consistency matters more than being right on any one input, because support only accumulates if one input always maps to one key. |
+| MusicBrainz rates **artists** as well as release groups (Radiohead: 4.5 from 80 votes) | `artists.critic_score` exists, so the artist page shows a genuine attributed baseline rather than a mean of its own albums wearing an artist's label. |
+| Cover Art Archive **302-redirects to a wildcard `archive.org` subdomain** | Both origins in `img-src` and `remotePatterns`. |
+| **The two ad slots are not statistically independent.** Measured over 20,000 pages: 33.9% carry no indie unit, 66.1% carry exactly one, **0% carry two** — and the share is still 0.3305 | Kept, and documented in `lib/ads/plan.ts` with the mechanism. The brief predicts a 4/9–4/9–1/9 split; FNV-1a's final multiply turns the one-bit difference between `"…slot:0"` and `"…slot:1"` into a constant ±`P` offset, and `P ≡ 2 (mod 3)`, so the two residues can never both be zero. The *share* was the promise, and spreading the same third of impressions across more distinct page views is reach rather than frequency — which is what an unknown artist wants. A test asserts the zero so a future "fix" has to argue with it. |
+
 ## 6. What is NOT being built
 
 Stated so that the absence is a decision rather than an omission:

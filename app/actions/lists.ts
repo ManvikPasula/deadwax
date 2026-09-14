@@ -733,7 +733,10 @@ export async function cloneList(input: CloneListInput): Promise<ActionResult<{ l
 export async function quickAddToList(
   input: QuickAddToListInput,
 ): Promise<ActionResult<{ listId: number; created: boolean }>> {
-  return guard("quickAddToList", async () => {
+  // The generic is explicit because the two `ok()` returns below carry the literal types
+  // `created: false` and `created: true`, and inference from the first return would then reject
+  // the second. Widening at the boundary rather than with `as boolean` at a call site.
+  return guard<{ listId: number; created: boolean }>("quickAddToList", async () => {
     const user = await requireUser();
 
     const parsed = quickAddInput.safeParse(input);
