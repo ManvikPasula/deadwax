@@ -3,7 +3,7 @@ import "server-only";
 import { randomBytes } from "node:crypto";
 
 import { hash } from "bcryptjs";
-import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import type { GuestAccount } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -271,67 +271,30 @@ export async function guestActivity(userId: number): Promise<GuestActivity> {
 }
 
 /**
- * The target of a review, for the exclusion in `countReviewsBy`.
+ * `countReviewsBy` AND ITS `ReviewTarget` USED TO LIVE HERE, AND HAVE BEEN DELETED. Import
+ * them from `@/lib/db/queries/logs` (`countReviewsBy`, `LogTarget`).
  *
- * `artistId` is REQUIRED because it is the always-present anchor on every log row (see
- * `logs.artist_id`); the other three are the narrowing ordinals and are null at the tiers
- * above them.
+ * This module briefly carried a second implementation of the same rule, which is the exact
+ * defect class this codebase is organised to avoid — "two of the defects found in audit came
+ * from copies drifting apart". They had already drifted, and the copy here was the wrong one.
+ *
+ * THE CORRECTION IS WORTH RECORDING, because the reasoning error is easy to repeat. This
+ * version excluded the edited target with a bare `not(and(...))`, under a comment asserting
+ * that was safe "because every operand is `IS NULL` or `= <literal>`, neither of which can
+ * evaluate to NULL".
+ *
+ * That is wrong, and it reasons about the SHAPE OF THE EXPRESSION rather than the NULLABILITY
+ * OF THE COLUMN. `logs.album_id` is nullable, so `album_id = 5` is NULL — not false — on every
+ * artist-level row. `AND` propagates the NULL, `NOT NULL` is NULL, and `WHERE NULL` drops the
+ * row. The effect: when a member edited an album-level review, every artist-level review they
+ * held silently stopped counting, so A GUEST AT THE THREE-REVIEW CAP WOULD BE HANDED ROOM THEY
+ * DID NOT HAVE.
+ *
+ * The surviving implementation wraps the match in `not coalesce(..., false)`, which collapses
+ * the third value before the negation and is why it is the one that stays. `tests/guest.test.ts`
+ * pins the behaviour against a real database rather than against the argument.
  */
-export type ReviewTarget = {
-  artistId: number;
-  albumId?: number | null;
-  discNumber?: number | null;
-  trackNumber?: number | null;
-};
 
-/**
- * How many reviews this member has written, OPTIONALLY EXCLUDING THE ONE BEING EDITED.
- *
- * The exclusion is the entire reason for the second argument. Without it, somebody sitting at
- * the cap cannot revise the three they already wrote — the count sees their own existing
- * review, refuses, and freezes them out of their own words. A cap on new reviews is an offer;
- * a cap on editing is a punishment.
- *
- * THE `ignore` CLAUSE BRANCHES ON NULL PER COLUMN, and rewriting it as a plain equality makes
- * the whole exclusion a silent no-op: SQL `album_id = NULL` evaluates to NULL, never true, so
- * an album-level or artist-level target would match nothing and the member's own review would
- * keep counting against them.
- *
- * `artistId` IS PART OF THE MATCH, and leaving it out is the same bug in the other direction.
- * On an artist-level log all three of album/disc/track are NULL, so matching on those columns
- * alone would exclude EVERY artist review the member holds rather than the one being edited —
- * and a guest at the cap would be told they have room they do not have.
- *
- * `not(and(...))` is well defined here because every operand is `IS NULL` or `= <literal>`,
- * neither of which can evaluate to NULL. An operand that could would make the negation
- * three-valued and quietly drop rows.
- */
-export async function countReviewsBy(userId: number, ignore?: ReviewTarget): Promise<number> {
-  const sameTarget = ignore
-    ? and(
-        eq(logs.artistId, ignore.artistId),
-        ignore.albumId == null ? isNull(logs.albumId) : eq(logs.albumId, ignore.albumId),
-        ignore.discNumber == null ? isNull(logs.discNumber) : eq(logs.discNumber, ignore.discNumber),
-        ignore.trackNumber == null ? isNull(logs.trackNumber) : eq(logs.trackNumber, ignore.trackNumber),
-      )
-    : undefined;
-
-  const [row] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(logs)
-    .where(
-      and(
-        eq(logs.userId, userId),
-        // The single definition of "has a review": `saveLog` normalises a whitespace-only body
-        // to SQL NULL before it writes, so a `<> ''` guard here would be a second rule about
-        // the same thing, and two rules about one thing drift the first time either moves.
-        isNotNull(logs.review),
-        ...(sameTarget ? [not(sameTarget)] : []),
-      ),
-    );
-
-  return row?.count ?? 0;
-}
 
 /**
  * The cap as a decision rather than as a comparison, so the log dialog's rendering and

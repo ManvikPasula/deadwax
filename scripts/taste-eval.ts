@@ -36,8 +36,8 @@ import { and, eq, isNull, like, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { albums, artists, logs, users } from "@/lib/db/schema";
 import { intToStars } from "@/lib/ratings";
-import { buildTasteProfile, predictAlbumRating } from "@/lib/taste/profile";
-import { getRecommendations } from "@/lib/taste/recommend";
+import { buildTasteProfile } from "@/lib/taste/profile";
+import { getRecommendations, predictAlbumRating } from "@/lib/taste/recommend";
 import { getRatedAlbumsForTaste } from "@/lib/db/queries/albums";
 
 const DOMAIN = "taste.test";

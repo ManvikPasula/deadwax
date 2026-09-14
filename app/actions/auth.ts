@@ -42,7 +42,7 @@ import { users } from "@/lib/db/schema";
 import { BUDGETS, clientAddress, consume, retryMessage } from "@/lib/security/rate-limit";
 import { GENERIC_AUTH_FAILURE, signInSchema, signUpSchema } from "@/lib/security/schemas";
 
-import { type ActionResult, fail, guard, ok, safeErrorDetail } from "./result";
+import { type ActionResult, fail, guard, safeErrorDetail } from "./result";
 
 /* ========================================================================== *
  * ?next= — HONOURED, AND ALLOWLISTED

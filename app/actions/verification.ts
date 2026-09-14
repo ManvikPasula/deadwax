@@ -118,7 +118,15 @@ async function issueVerificationToken(userId: number, email: string): Promise<st
  * revalidation here would be one of the dead paths this build does not carry.
  */
 export async function sendVerification(): Promise<ActionResult<VerificationSendResult>> {
-  return guard("sendVerification", async () => {
+  /**
+   * The type argument is EXPLICIT on purpose. `guard<T>` infers `T` from the callback's return,
+   * and the callback's `ok({ alreadyConfirmed: true, … })` branch returns the LITERAL type
+   * `true` rather than `boolean` — so inference picks the first branch's shape and then rejects
+   * every later branch that reports `alreadyConfirmed: false`. Naming `VerificationSendResult`
+   * here makes the declared contract the source of truth instead of whichever branch happens
+   * to come first in the body.
+   */
+  return guard<VerificationSendResult>("sendVerification", async () => {
     const user = await requireUser();
 
     const [row] = await db
