@@ -81,6 +81,46 @@ function repoPath(absolute: string): string {
 }
 
 /**
+ * STRIPS COMMENTS BEFORE MATCHING, and this is not a nicety — without it the test is unusable
+ * in this codebase.
+ *
+ * The house style here is to document the REJECTED ALTERNATIVE next to every non-obvious
+ * decision, which means the safest files are the ones most likely to contain the dangerous
+ * pattern as PROSE. `app/actions/profile.ts` is the worked example: its docblock explains that
+ * a spread would be a latent write path and quotes `.set({ role: … })` to say so, while the
+ * code beneath uses `.set(patch)` with an explicitly-typed four-field object. A raw-source
+ * regex flagged the file that had gone furthest out of its way to be correct.
+ *
+ * So a source-level detector in a well-commented codebase has to read code, not text. The
+ * stripper is heuristic rather than a parser: it removes block and line comments and blanks
+ * string and template literals, which is enough because the patterns being searched for are
+ * structural. A false NEGATIVE would need somebody to hide an assignment inside a string and
+ * then `eval` it, which is a different problem.
+ */
+function codeOnly(source: string): string {
+  return (
+    source
+      // Block comments, including every JSDoc paragraph. Newlines are preserved so the
+      // surviving code keeps its line structure.
+      .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, " "))
+      // TypeScript line comments. The `(^|[^:])` guard keeps `https://` inside a real string
+      // from being read as the start of a comment and eating the rest of that line.
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      // SQL line comments inside a `sql` template. These are prose too, and they are where the
+      // "COPY THIS COMMENT" convention puts its longest explanations — including, in two query
+      // modules, the phrase "UPDATE users SET role" as an example of what not to do.
+      .replace(/(^|\n)(\s*)--[^\n]*/g, "$1$2")
+  );
+  /**
+   * STRING AND TEMPLATE LITERALS ARE DELIBERATELY LEFT INTACT. An earlier version blanked them,
+   * which silently disabled the raw-SQL check entirely — every `db.execute(sql`…`)` in the
+   * codebase lives inside a template literal, so blanking templates means the detector can
+   * only ever see ORM calls. That is the worse failure of the two: a regex that reports clean
+   * because it stopped looking.
+   */
+}
+
+/**
  * A drizzle `.set({ ... })` whose object mentions `role:` or `plan:` within a few hundred
  * characters. The window is generous because a real call spans several lines.
  */
@@ -92,6 +132,19 @@ const DRIZZLE_SET = /\.set\(\s*\{[\s\S]{0,400}?\b(role|plan)\s*:/;
  * Matches an UPDATE against `users` that assigns either column.
  */
 const RAW_SQL_UPDATE = /UPDATE\s+(?:"?public"?\.)?"?users"?[\s\S]{0,300}?\bSET\b[\s\S]{0,300}?\b(role|plan)\s*=/i;
+
+/**
+ * AN IMPORT, NOT A MENTION.
+ *
+ * Both the admin action and the profile action NAME `scripts/grant-admin.ts` in their
+ * docblocks, to explain why granting is a CLI rather than a button. That is documentation, and
+ * matching it punishes the two files that went furthest out of their way to explain themselves
+ * — the same false positive the comment stripper above exists for, in a different disguise.
+ *
+ * Match the dependency, not the discussion of it.
+ */
+const IMPORTS_GRANT_SCRIPT = /(?:import|require)\s*\(?[^;\r\n]*grant-admin/;
+const IMPORTS_ADMIN_QUERIES = /(?:import|require)\s*\(?[^;\r\n]*queries\/admin/;
 
 /** An INSERT that names either column. Safe defaults must come from the schema, not a caller. */
 const RAW_SQL_INSERT = /INSERT\s+INTO\s+(?:"?public"?\.)?"?users"?[\s\S]{0,200}?\(([^)]*\b(?:role|plan)\b[^)]*)\)/i;
@@ -110,7 +163,7 @@ describe("no privilege escalation path exists", () => {
     for (const file of files) {
       const path = repoPath(file);
       if (ALLOWED.has(path) || path === SELF) continue;
-      if (DRIZZLE_SET.test(readFileSync(file, "utf8"))) offenders.push(path);
+      if (DRIZZLE_SET.test(codeOnly(readFileSync(file, "utf8")))) offenders.push(path);
     }
     expect(offenders).toEqual([]);
   });
@@ -122,7 +175,7 @@ describe("no privilege escalation path exists", () => {
     for (const file of files) {
       const path = repoPath(file);
       if (ALLOWED.has(path) || path === SELF) continue;
-      const source = readFileSync(file, "utf8");
+      const source = codeOnly(readFileSync(file, "utf8"));
       if (RAW_SQL_UPDATE.test(source) || RAW_SQL_INSERT.test(source)) offenders.push(path);
     }
     expect(offenders).toEqual([]);
@@ -153,7 +206,12 @@ describe("no privilege escalation path exists", () => {
     for (const file of files) {
       const path = repoPath(file);
       if (!path.startsWith("app/") && !path.startsWith("components/")) continue;
-      if (/grant-admin/.test(readFileSync(file, "utf8"))) importers.push(path);
+      // An IMPORT, not a mention. Both the admin action and the profile action name
+      // `scripts/grant-admin.ts` in their docblocks to explain why granting is a CLI — which
+      // is documentation, and matching it would punish the files for explaining themselves.
+      if (IMPORTS_GRANT_SCRIPT.test(codeOnly(readFileSync(file, "utf8")))) {
+        importers.push(path);
+      }
     }
     expect(importers).toEqual([]);
   });
@@ -167,7 +225,7 @@ describe("no privilege escalation path exists", () => {
       const path = repoPath(file);
       if (!path.startsWith("app/actions/")) continue;
       if (path === "app/actions/admin.ts" || path === "app/actions/ads.ts") continue;
-      if (/queries\/admin/.test(readFileSync(file, "utf8"))) offenders.push(path);
+      if (IMPORTS_ADMIN_QUERIES.test(codeOnly(readFileSync(file, "utf8")))) offenders.push(path);
     }
     expect(offenders).toEqual([]);
   });

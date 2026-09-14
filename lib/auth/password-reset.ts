@@ -89,11 +89,42 @@ export type PasswordResetIssue = {
   /** The plaintext, returned ONCE. It goes into one email and is then unrecoverable. */
   token: string;
   expiresAt: Date;
+  /**
+   * The address the token was BOUND to, read off the row inside the transaction. Returned so
+   * the caller mails exactly what was bound rather than whatever it happened to be holding —
+   * a mail sent to a different address than the token records is a link that will be refused
+   * on redemption by the mismatch check.
+   */
+  email: string;
 };
+
+/**
+ * Thrown when there is nothing to issue a token for: the row is gone, or it is a guest.
+ *
+ * Both call sites (the member's own request, through `findResetRecipient`, and the admin
+ * panel, which checks `is_guest` explicitly) have already excluded both cases, so this is the
+ * belt rather than the braces — but it is the belt that makes "no reset token can exist for a
+ * guest" a property of this module rather than a property of two callers remembering. A guest
+ * has no password to reset and an address on a reserved TLD that can never receive the mail.
+ */
+export class PasswordResetUnavailableError extends Error {
+  constructor() {
+    super("That account cannot be sent a password reset.");
+    // Minification renames classes; `name` is what reaches the log.
+    this.name = "PasswordResetUnavailableError";
+  }
+}
 
 /**
  * Issues a reset token, RETIRING EVERY OUTSTANDING ONE FOR THAT USER IN THE SAME TRANSACTION
  * (I-27).
+ *
+ * IT TAKES AN ID AND READS THE ADDRESS ITSELF, rather than taking both. The address on the
+ * token row is what the redemption check compares against, so a caller that could pass one
+ * could bind a token to an address the account does not hold — and the row is the only
+ * authority on that (see the recipient rule in lib/email/index.ts). Reading it inside the
+ * transaction also means the bound value is the value as of the issue, not as of whenever the
+ * caller last looked.
  *
  * The retirement is not housekeeping. Without it, every "send it again" press leaves another
  * live token in the mailbox, so the window in which a leaked or forwarded message takes over
@@ -112,25 +143,34 @@ export type PasswordResetIssue = {
  * The address is COPIED ONTO THE TOKEN ROW, so a later change of address cannot be confirmed
  * by an old link: `redeemPasswordReset` compares the two and refuses a mismatch.
  */
-export async function issuePasswordReset(input: { userId: number; email: string }): Promise<PasswordResetIssue> {
+export async function issuePasswordReset(userId: number): Promise<PasswordResetIssue> {
   const { token, tokenHash } = createLinkToken();
   const expiresAt = linkTokenExpiry(PASSWORD_RESET_TTL_MINUTES);
 
-  await db.transaction(async (tx) => {
+  const email = await db.transaction(async (tx) => {
+    const [account] = await tx
+      .select({ email: users.email, isGuest: users.isGuest })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!account || account.isGuest) throw new PasswordResetUnavailableError();
+
     await tx
       .update(passwordResetTokens)
       .set({ consumedAt: new Date() })
-      .where(and(eq(passwordResetTokens.userId, input.userId), isNull(passwordResetTokens.consumedAt)));
+      .where(and(eq(passwordResetTokens.userId, userId), isNull(passwordResetTokens.consumedAt)));
 
     await tx.insert(passwordResetTokens).values({
-      userId: input.userId,
+      userId,
       tokenHash,
-      email: input.email,
+      email: account.email,
       expiresAt,
     });
+
+    return account.email;
   });
 
-  return { token, expiresAt };
+  return { token, expiresAt, email };
 }
 
 /**

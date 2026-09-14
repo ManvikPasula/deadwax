@@ -262,8 +262,14 @@ export function DiscographyHeatmap({ rows, predictions, artistName, className }:
         than no tablist at all.
       */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/*
+          The visible label sits OUTSIDE the group and the group carries its own `aria-label`.
+          Putting the `<p>` inside would make a screen reader read "Colour by" as the group's
+          first child immediately after reading the group's name, which is the same words
+          twice.
+        */}
+        <Eyebrow>Colour by</Eyebrow>
         <div role="group" aria-label="Colour the grid by" className="flex flex-wrap items-center gap-1.5">
-          <Eyebrow className="mr-1">Colour by</Eyebrow>
           {SOURCES.map((option) => {
             const enabled = available[option.key];
             const selected = source === option.key;
@@ -345,7 +351,7 @@ export function DiscographyHeatmap({ rows, predictions, artistName, className }:
           <Readout
             row={activeRow}
             cell={activeCell}
-            score={scoreFor(activeCell, source, predictions?.get(albumTrackKey(activeRow.albumId, activeCell.disc, activeCell.track)) ?? null)}
+            score={scoreFor(activeCell, source, predictions?.get(predictionKey(activeRow.albumId, activeCell.disc, activeCell.track)) ?? null)}
             source={source}
           />
         ) : (
@@ -427,7 +433,7 @@ function HeatRow({
             row={row}
             cell={cell}
             source={source}
-            predicted={predictions?.get(albumTrackKey(row.albumId, cell.disc, cell.track)) ?? null}
+            predicted={predictions?.get(predictionKey(row.albumId, cell.disc, cell.track)) ?? null}
             artistName={artistName}
             onEnter={() => onActivate({ row: rowIndex, cell: cellIndex })}
             onLeave={() => onDeactivate(null)}

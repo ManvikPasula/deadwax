@@ -6,12 +6,11 @@ import { z } from "zod";
 
 import { type ActionResult, fail, guard, ok } from "@/app/actions/result";
 import { requireAdmin } from "@/lib/auth/admin";
-import { issuePasswordReset } from "@/lib/auth/password-reset";
+import { issuePasswordReset, passwordResetUrl } from "@/lib/auth/password-reset";
 import { db } from "@/lib/db";
 import { findAccountForAdmin, recordAction } from "@/lib/db/queries/admin";
 import { albums, artists, users } from "@/lib/db/schema";
 import { type EmailVia, sendAdminPasswordResetEmail } from "@/lib/email";
-import { env } from "@/lib/env";
 import { ensureAlbum } from "@/lib/ingest/albums";
 import { TAGS } from "@/lib/providers/deezer/client";
 import { albumIdSchema, userIdSchema } from "@/lib/security/schemas";
@@ -315,15 +314,28 @@ export async function sendAccountPasswordReset(input: {
       });
     });
 
-    // Issued after the audit row and before the mail. `issuePasswordReset` retires every
-    // outstanding token for this account in the same transaction as the insert (I-27), so a
-    // second click invalidates the first link rather than leaving two live ones.
-    const { token } = await issuePasswordReset(account.id);
+    /**
+     * Issued after the audit row and before the mail. `issuePasswordReset` retires every
+     * outstanding token for this account in the same transaction as the insert (I-27), so a
+     * second click invalidates the first link rather than leaving two live ones in a mailbox.
+     *
+     * THE MAIL GOES TO `issued.email`, NOT TO `account.email`, AND THE DIFFERENCE IS THE WHOLE
+     * OF PROPERTY 1. It takes an id and reads the address off the row inside its own
+     * transaction, so the address the token is BOUND to is the address that receives it. The
+     * two values will normally be the same string — `account.email` also came from the row —
+     * but "normally" is not a property: a change of address committed between the two reads
+     * would otherwise produce a link that `redeemPasswordReset` refuses on its mismatch check,
+     * and the member would be told nothing except that their reset does not work.
+     *
+     * The URL comes from `passwordResetUrl` rather than being assembled here, so this action
+     * and the member's own reset request cannot send links to two different routes.
+     */
+    const issued = await issuePasswordReset(account.id);
 
     const result = await sendAdminPasswordResetEmail({
-      to: account.email,
+      to: issued.email,
       username: account.username,
-      url: `${env.siteUrl}/reset?token=${token}`,
+      url: passwordResetUrl(issued.token),
       ttlMinutes: PASSWORD_RESET_TTL_MINUTES,
     });
 

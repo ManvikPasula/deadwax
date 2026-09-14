@@ -451,29 +451,47 @@ const SHORTLIST_MULTIPLIER = 3;
  * The result shape — three gates, three arms, three copies
  * ========================================================================== */
 
-export type Recommendation = {
-  album: AlbumRow;
-  /** THE MODEL'S ACTUAL ESTIMATE, stored 1..10. Render this, not the ranking score. */
-  rating: number;
-  confidence: number;
-  /** At most three. The UI renders up to two. */
-  reasons: string[];
-  neighbourOf: NeighbourSeed | null;
-};
+/**
+ * A ranked album: the row a card renders, PLUS the three numbers the model produced.
+ *
+ * `AlbumRow & …` is the house composition — `CommunityAlbumRow`, `DiscographyAlbum` and
+ * `getTopAlbums`'s return all take the same shape — and it is what lets a recommendation be
+ * handed straight to a cover card without unwrapping.
+ *
+ * `rating` IS THE MODEL'S ACTUAL ESTIMATE, and it sits beside `criticScore` on the same stored
+ * 0..10 scale on purpose: the two are comparable, and `<Stars>` renders both.
+ */
+export type Recommendation = AlbumRow &
+  AlbumPrediction & {
+    /** Null when the album did not arrive through the neighbour graph. */
+    neighbourOf: NeighbourSeed | null;
+  };
 
 /**
- * THREE DISTINCT ARMS RATHER THAN ONE `{ ok: false; message }`, and the shape is the point: the
- * page cannot render one apology for all three refusals, because there is no single field to
- * render. Each withholding reason gets its own copy.
+ * FOUR ARMS, AND THREE OF THEM CARRY THEIR OWN COPY. The shape is the point: there is no single
+ * `message` field shared across the refusals, so the page CANNOT render one apology for all
+ * three. Each withholding reason gets its own sentence.
  *
  * *Ten indistinguishable predictions dressed as a ranked list is worse than saying there is
  * nothing to say yet.*
+ *
+ * `withheld` IS THE DISCRIMINANT, not an `ok` flag, because a withheld list is a PASS rather
+ * than a failure — the flat rater is *supposed* to be refused, and calling that arm an error
+ * is how a correct refusal ends up being logged as a bug.
  */
 export type RecommendationResult =
-  | { status: "ok"; items: Recommendation[]; profile: TasteProfile; ratedAlbums: number }
-  | { status: "too-few"; ratedAlbums: number; needed: number; title: string; detail: string }
-  | { status: "no-variety"; ratedAlbums: number; title: string; detail: string }
-  | { status: "cold-pool"; ratedAlbums: number; title: string; detail: string };
+  | { withheld: false; items: Recommendation[]; profile: TasteProfile; ratedAlbums: number }
+  | {
+      withheld: true;
+      reason: "too-few";
+      ratedAlbums: number;
+      /** For the progress bar: how many rated albums the gate is waiting for. */
+      needed: number;
+      title: string;
+      message: string;
+    }
+  | { withheld: true; reason: "no-variety"; ratedAlbums: number; title: string; message: string }
+  | { withheld: true; reason: "cold-pool"; ratedAlbums: number; title: string; message: string };
 
 /* ========================================================================== *
  * Exclusions
@@ -976,13 +994,14 @@ export async function getRecommendations(userId: number, limit = 12): Promise<Re
   /* ---- GATE 1 — too few ratings ------------------------------------------------------- */
   if (rated.length < MIN_RATED_ALBUMS) {
     return {
-      status: "too-few",
+      withheld: true,
+      reason: "too-few",
       ratedAlbums: rated.length,
       needed: MIN_RATED_ALBUMS,
       title: "Not enough to go on yet",
       // Naming the track path matters: a member who only rates tracks would otherwise read this
       // as "album ratings only" and conclude the feature is not for them.
-      detail: "An album rating counts, and so does rating individual tracks.",
+      message: "An album rating counts, and so does rating individual tracks.",
     };
   }
 
@@ -991,12 +1010,13 @@ export async function getRecommendations(userId: number, limit = 12): Promise<Re
   /* ---- GATE 2 — no variety. BEFORE ANY PROVIDER CALL. --------------------------------- */
   if (profile.spread < NO_VARIETY_SPREAD) {
     return {
-      status: "no-variety",
+      withheld: true,
+      reason: "no-variety",
       ratedAlbums: rated.length,
       title: "Your ratings are too alike",
       // "The gaps are the signal" is kept WORD FOR WORD from the television original. It says
       // nothing about the domain and it is the best single sentence in that codebase.
-      detail:
+      message:
         "Rating the things you disliked helps more than rating the things you loved. The gaps are the signal.",
     };
   }
@@ -1136,7 +1156,7 @@ export async function getRecommendations(userId: number, limit = 12): Promise<Re
     if (!album) return []; // deleted between two statements: shorten the list, do not crash
     return [
       {
-        album,
+        ...album,
         // THE MODEL'S ACTUAL ESTIMATE, not `entry.score`. The ranking score is shrunk toward the
         // member's mean by confidence and exists only to order the list; showing it would be a
         // number distorted for sorting, which is a worse dishonesty than the one it fixes.
@@ -1149,16 +1169,17 @@ export async function getRecommendations(userId: number, limit = 12): Promise<Re
   });
 
   if (items.length === 0) return coldPool(rated.length);
-  return { status: "ok", items, profile, ratedAlbums: rated.length };
+  return { withheld: false, items, profile, ratedAlbums: rated.length };
 }
 
 /** GATE 3 — the pool came back empty. Its own copy, because it is its own situation. */
 function coldPool(ratedAlbums: number): RecommendationResult {
   return {
-    status: "cold-pool",
+    withheld: true,
+    reason: "cold-pool",
     ratedAlbums,
     title: "Nothing new to suggest",
-    detail:
+    message:
       "Everything the catalogue can reach from your ratings is already in your diary or your wantlist. " +
       "Rate something outside your usual lane and this fills up again.",
   };
