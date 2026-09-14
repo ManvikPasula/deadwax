@@ -47,11 +47,32 @@ const ALLOWED = new Set(["app/actions/admin.ts", "scripts/grant-admin.ts"]);
  */
 const SELF = "tests/no-escalation.test.ts";
 
-/** Walked in full. `drizzle/` is generated SQL and `.next/` is build output. */
-const WALK = ["app", "lib", "components", "scripts", "tests"];
+/**
+ * THE TREE THAT SHIPS, and the only tree where writing these columns is an escalation path.
+ *
+ * `tests/` is deliberately EXCLUDED from the write checks and then policed a different way, and
+ * the reasoning matters because the first version got it wrong in both directions.
+ *
+ * The source brief names "a writer placed in `tests/`" as a hole in its version of this
+ * assertion, so the first version here walked `tests/` too — and immediately flagged
+ * `tests/security.test.ts`, which sets `role: "admin"` and back WITHOUT TOUCHING THE SESSION
+ * in order to prove that revocation takes effect on the next request. That is the single
+ * stated invariant of the admin subsystem, and the only way to test it is to write the column.
+ * A detector that forbids testing the guarantee is worse than no detector.
+ *
+ * But the hole the brief names is real, so it is closed by asking the right question. A file
+ * under `tests/` cannot be an escalation path on its own: it is never bundled, never imported
+ * by a route, and never runs against production. It becomes one only if SHIPPING CODE IMPORTS
+ * IT — so that is what is asserted instead, in "nothing that ships imports from tests/" below.
+ *
+ * `drizzle/` is generated SQL, and a hand-edited migration is an operator act with database
+ * credentials — the same trust level as the grant script.
+ */
+const SHIPPED_WALK = ["app", "lib", "components", "scripts"];
+const WALK = [...SHIPPED_WALK, "tests"];
 const SKIP_DIRS = new Set(["node_modules", ".next", ".pglite", "drizzle", "scratch"]);
 
-function sourceFiles(): string[] {
+function sourceFiles(tops: readonly string[] = WALK): string[] {
   const found: string[] = [];
   const visit = (dir: string): void => {
     for (const entry of readdirSync(dir)) {
@@ -64,7 +85,7 @@ function sourceFiles(): string[] {
       if ([".ts", ".tsx"].includes(extname(entry))) found.push(full);
     }
   };
-  for (const top of WALK) {
+  for (const top of tops) {
     const full = join(ROOT, top);
     try {
       if (statSync(full).isDirectory()) visit(full);
@@ -146,11 +167,21 @@ const RAW_SQL_UPDATE = /UPDATE\s+(?:"?public"?\.)?"?users"?[\s\S]{0,300}?\bSET\b
 const IMPORTS_GRANT_SCRIPT = /(?:import|require)\s*\(?[^;\r\n]*grant-admin/;
 const IMPORTS_ADMIN_QUERIES = /(?:import|require)\s*\(?[^;\r\n]*queries\/admin/;
 
+/**
+ * A module specifier that resolves into `tests/`, however it is spelled: `"@/tests/…"`,
+ * `"../tests/…"`, `"./tests/…"`. The character class is what keeps it from matching the word
+ * "tests" in an ordinary path segment.
+ */
+const IMPORTS_FROM_TESTS = /(?:import|require)\s*\(?[^;\r\n]*["'`@./]tests\//;
+
 /** An INSERT that names either column. Safe defaults must come from the schema, not a caller. */
 const RAW_SQL_INSERT = /INSERT\s+INTO\s+(?:"?public"?\.)?"?users"?[\s\S]{0,200}?\(([^)]*\b(?:role|plan)\b[^)]*)\)/i;
 
 describe("no privilege escalation path exists", () => {
+  /** Everything, for the import checks. */
   const files = sourceFiles();
+  /** Only what ships, for the write checks. See the SHIPPED_WALK docblock. */
+  const shipped = sourceFiles(SHIPPED_WALK);
 
   it("finds a source tree to walk at all", () => {
     // A guard against the test passing because the walk found nothing — the exact way a
@@ -160,7 +191,7 @@ describe("no privilege escalation path exists", () => {
 
   it("only the admin action and the grant script write users.role or users.plan via the ORM", () => {
     const offenders: string[] = [];
-    for (const file of files) {
+    for (const file of shipped) {
       const path = repoPath(file);
       if (ALLOWED.has(path) || path === SELF) continue;
       if (DRIZZLE_SET.test(codeOnly(readFileSync(file, "utf8")))) offenders.push(path);
@@ -172,7 +203,7 @@ describe("no privilege escalation path exists", () => {
     // The hole the source version leaves open. A raw db.execute slips past a `.set({})` regex
     // entirely, and it is exactly what somebody reaches for when the ORM makes a write awkward.
     const offenders: string[] = [];
-    for (const file of files) {
+    for (const file of shipped) {
       const path = repoPath(file);
       if (ALLOWED.has(path) || path === SELF) continue;
       const source = codeOnly(readFileSync(file, "utf8"));
@@ -214,6 +245,27 @@ describe("no privilege escalation path exists", () => {
       }
     }
     expect(importers).toEqual([]);
+  });
+
+  it("nothing that ships imports from tests/", () => {
+    /**
+     * THE REPLACEMENT FOR WALKING `tests/`, and the assertion that actually closes the hole the
+     * source brief names.
+     *
+     * A test file may set `users.role` — `tests/security.test.ts` has to, in order to prove that
+     * revocation takes effect on the next request. What must never happen is shipping code
+     * reaching into that tree: a helper imported from `tests/` is bundled, reachable, and
+     * running in production, at which point its privileged write is a real escalation path and
+     * the "it is only a test" reasoning silently stops being true.
+     */
+    const offenders: string[] = [];
+    for (const file of shipped) {
+      const path = repoPath(file);
+      if (IMPORTS_FROM_TESTS.test(codeOnly(readFileSync(file, "utf8")))) {
+        offenders.push(path);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("no member-facing action module imports the admin query module", () => {

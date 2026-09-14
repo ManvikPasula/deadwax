@@ -100,11 +100,14 @@ export function ListItemRow({ item, rank = null, actions, className }: ListItemR
    * hundred-item playlist that is three hundred tab stops to reach the bottom of one list,
    * and both destinations are one click away from the row's own link. One link per row.
    */
-  const meta = item.track
+  const meta: Array<string | null | undefined> = item.track
     ? [item.track.locator, item.album?.title, item.artist.name, formatDuration(item.track.durationMs ?? 0)]
     : isArtist
       ? [item.artist.name]
       : [item.artist.name, releaseYear(item.album?.releaseDate)];
+  // An explicit predicate rather than `.filter(Boolean)`: the latter does not narrow the array
+  // type under `strict`, so the JSX below would be mapping over `string | null | undefined`.
+  const metaParts = meta.filter((part): part is string => typeof part === "string" && part.length > 0);
 
   return (
     <li className={cn("group flex items-start gap-3 py-3", className)}>
@@ -157,7 +160,7 @@ export function ListItemRow({ item, rank = null, actions, className }: ListItemR
           {/* The badge is the TEXT EQUIVALENT for the placeholder glyph and for the round-vs-square
               geometry: neither of those says "track" to anybody who cannot see them. */}
           <Badge>{kind}</Badge>
-          {meta.filter(Boolean).map((part, index) => (
+          {metaParts.map((part, index) => (
             <span key={`${item.id}-meta-${index}`} className="flex items-center gap-2">
               {index > 0 ? (
                 <span aria-hidden="true" className="text-line-bright">
