@@ -161,12 +161,23 @@ export type AlbumEnrichment = {
   originalReleaseDate: string | null;
   secondaryTypes: string[];
   primaryType: string | null;
+  /**
+   * The ARTIST's MBID, harvested from the release group's `artist-credit`.
+   *
+   * Free — the lookup already passes `inc=artists` — and it is the only cheap way to get one.
+   * Without it, artist enrichment can never run: it needs an MBID to look up, resolving one by
+   * search would cost a request per artist against the flakiest provider in the stack, and so
+   * `artists.critic_score` would stay permanently null even though probing proved MusicBrainz
+   * rates artists too (Radiohead: 4.5 from 80 votes).
+   */
+  artistMbid: string | null;
 };
 
 export function mapAlbumEnrichment(group: MbReleaseGroup): AlbumEnrichment {
   const rating = mapRating(group.rating);
   return {
     mbid: group.id,
+    artistMbid: group["artist-credit"]?.[0]?.artist?.id ?? null,
     criticScore: rating.score,
     criticVotes: rating.votes,
     tags: mbTagsToAttributes(group.genres, group.tags),

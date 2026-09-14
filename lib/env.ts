@@ -108,7 +108,10 @@ export const env = {
  * reported, not enforced — the point is that an operator can see what is off.
  */
 export function assertEnv(): void {
-  env.authSecret;
+  // Reading the getter IS the assertion: it throws when the value is missing. Assigned to
+  // a void-marked local rather than left as a bare expression, so it cannot be mistaken
+  // for dead code and deleted.
+  void env.authSecret;
 
   const notes: string[] = [];
   if (!env.databaseUrl) notes.push("DATABASE_URL is unset — using PGlite at ./.pglite (not viable on serverless)");

@@ -143,19 +143,86 @@ async function mbRequest<T>(path: string, params: Record<string, string | number
   return payload as T;
 }
 
-async function optional<T>(path: string, params: Record<string, string | number | undefined>): Promise<T | null> {
+/**
+ * The outcome of a MusicBrainz lookup, as THREE cases rather than two.
+ *
+ * THIS DISTINCTION IS THE WHOLE POINT, and collapsing it to `T | null` caused a real bug.
+ *
+ * The ingest layer stamps `mb_synced_at` after a lookup so that an album with no MusicBrainz
+ * match is not re-queried on every page view for the next month. With a two-case result —
+ * "got it" or "null" — a **503 "server currently busy" is indistinguishable from "no such
+ * release group"**, so a transient outage stamped the row and turned a five-minute blip into
+ * thirty days of permanent absence.
+ *
+ * That is exactly what happened on the first seeding run: MusicBrainz answered busy for most
+ * of a 37-album batch, every one of those albums got stamped, and the whole catalogue came out
+ * with `critic_votes = 0` — no consensus card anywhere, from an endpoint that had been
+ * verified working minutes earlier.
+ *
+ * So: `absent` may be cached, `unavailable` may NOT.
+ */
+export type MbOutcome<T> = { status: "found"; value: T } | { status: "absent" } | { status: "unavailable" };
+
+/** Statuses that mean "ask again later", as opposed to "this does not exist". */
+function isTransient(status: number): boolean {
+  return status === 503 || status === 502 || status === 504 || status === 429 || status === 500;
+}
+
+async function attempt<T>(path: string, params: Record<string, string | number | undefined>): Promise<MbOutcome<T>> {
   try {
-    return await enqueue(() => mbRequest<T>(path, params));
+    return { status: "found", value: await enqueue(() => mbRequest<T>(path, params)) };
   } catch (error) {
-    // Deliberately quiet at info level: a busy MusicBrainz is the normal case, not an
-    // incident, and logging it as a warning on every album view would train the operator to
-    // ignore warnings.
+    if (error instanceof ProviderError) {
+      // Deliberately quiet at info level: a busy MusicBrainz is the normal case, not an
+      // incident, and logging it as a warning on every album view would train the operator to
+      // ignore warnings.
+      console.info("[musicbrainz] skipped —", error.message);
+      return isTransient(error.status) ? { status: "unavailable" } : { status: "absent" };
+    }
     console.info("[musicbrainz] skipped —", error instanceof Error ? error.message : error);
-    return null;
+    return { status: "unavailable" };
   }
 }
 
-/** Lookup by release-group MBID, with everything the enrichment needs in one request. */
+/**
+ * One retry on a transient failure, after a real pause.
+ *
+ * Their "currently busy" response is server load rather than our rate limit, and probing found
+ * it on roughly one request in three when spaced at ~1.1 s — and on most of a sustained batch.
+ * A single retry two seconds later converts a large fraction of those into successes for the
+ * cost of one extra request, which is a good trade against an endpoint whose data we cache for
+ * thirty days.
+ *
+ * It stays at ONE retry: this provider is never on a path that decides a response status, so
+ * spending more of a member's page load on it would be paying for somebody else's outage.
+ */
+async function outcome<T>(path: string, params: Record<string, string | number | undefined>): Promise<MbOutcome<T>> {
+  const first = await attempt<T>(path, params);
+  if (first.status !== "unavailable") return first;
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  return attempt<T>(path, params);
+}
+
+/** The convenience form, for callers that genuinely do not care why it is missing. */
+async function optional<T>(path: string, params: Record<string, string | number | undefined>): Promise<T | null> {
+  const result = await outcome<T>(path, params);
+  return result.status === "found" ? result.value : null;
+}
+
+/**
+ * Lookup by release-group MBID — THE ONLY CALL THAT RETURNS A RATING.
+ *
+ * `inc=artists+ratings+genres+tags` works here and is silently ignored on the search endpoint,
+ * which is why enrichment is a search followed by a lookup rather than one query. See the
+ * comment in `enrichAlbumFromMusicBrainz`.
+ */
+export function getReleaseGroupOutcome(mbid: string): Promise<MbOutcome<MbReleaseGroup>> {
+  return outcome<MbReleaseGroup>(`/release-group/${encodeURIComponent(mbid)}`, {
+    inc: "artists+ratings+genres+tags",
+  });
+}
+
+/** The convenience form, for callers that do not need to know why it is missing. */
 export function getReleaseGroup(mbid: string): Promise<MbReleaseGroup | null> {
   return optional<MbReleaseGroup>(`/release-group/${encodeURIComponent(mbid)}`, {
     inc: "artists+ratings+genres+tags",
@@ -175,18 +242,31 @@ export function getArtist(mbid: string): Promise<MbArtist | null> {
  * 1997-05-21, which is exactly the reissue-trap fix we want and is why the resolution is done
  * this way round.
  */
-export async function findReleaseGroup(artistName: string, title: string): Promise<MbReleaseGroup | null> {
-  const clean = (value: string) => value.replace(/["\\]/g, " ").trim();
+export async function findReleaseGroup(artistName: string, title: string): Promise<MbOutcome<MbReleaseGroup>> {
+  const clean = (value: string) =>
+    value
+      .replace(/["\\]/g, " ")
+      // Strip a trailing edition qualifier before searching. "Nevermind (Remastered)" finds
+      // nothing; "Nevermind" finds the release group, whose first-release-date is the whole
+      // reason we are asking.
+      .replace(/\s*[([{][^)\]}]*[)\]}]\s*/g, " ")
+      .replace(/\s+[-–—]\s+.*$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
   const query = `release:"${clean(title)}" AND artistname:"${clean(artistName)}"`;
-  const result = await optional<{ "release-groups"?: MbReleaseGroup[] }>("/release-group", { query, limit: 5 });
-  const groups = result?.["release-groups"] ?? [];
-  if (groups.length === 0) return null;
+  const result = await outcome<{ "release-groups"?: MbReleaseGroup[] }>("/release-group", { query, limit: 5 });
+  if (result.status !== "found") return result;
+
+  const groups = result.value["release-groups"] ?? [];
+  if (groups.length === 0) return { status: "absent" };
 
   // Prefer an exact-ish title match on a primary-type Album, then fall back to the top score.
   const target = clean(title).toLowerCase();
   const scored = [...groups].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  const exact = scored.find((group) => group.title.toLowerCase() === target && group["primary-type"] === "Album");
-  return exact ?? scored[0] ?? null;
+  const exact = scored.find((group) => clean(group.title).toLowerCase() === target && group["primary-type"] === "Album");
+  const chosen = exact ?? scored[0];
+  return chosen ? { status: "found", value: chosen } : { status: "absent" };
 }
 
 export const MUSICBRAINZ_TTL_MS = CACHE_SECONDS * 1000;

@@ -1,0 +1,83 @@
+name: CI
+
+# Read-only, and with NO REPOSITORY SECRETS ANYWHERE. That is what makes it safe to run on
+# pull requests from forks — a workflow that needs a credential cannot be.
+#
+# Deadwax needs no provider credential at all, which is a genuine improvement over the
+# television original: that project has to pass a placeholder TMDB token just to get through a
+# build, because its `env.ts` throws on a missing variable. Here only AUTH_SECRET is needed,
+# and only because Auth.js reads it.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel the previous run on the same ref: nobody needs the results of a superseded commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      # --ignore-scripts by default, because a postinstall step is arbitrary code execution
+      # from the dependency tree.
+      - run: npm ci --ignore-scripts
+
+      # esbuild ships a platform binary via a postinstall step, which --ignore-scripts skips.
+      # Vitest needs it, so allow JUST THAT ONE rather than allowing all scripts.
+      - run: npm rebuild esbuild
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+      # The build never contacts a provider or a database — every route is server-rendered on
+      # demand — but `lib/env.ts` fails loudly on a missing variable rather than falling back
+      # to something insecure, so AUTH_SECRET gets a placeholder.
+      #
+      # DATABASE_URL is deliberately unset, which makes the migrate step inside `build` a no-op
+      # and proves the dual-driver switch really is a switch.
+      - run: npm run build
+        env:
+          AUTH_SECRET: ci-placeholder-value-not-a-real-secret
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+
+      # BLOCKING, and scoped to runtime dependencies: runtime dependencies are what ship.
+      - run: npm audit --omit=dev --audit-level=high
+
+      # Informational only. A dev-dependency advisory should not stop a merge, but it should be
+      # visible in the log.
+      - run: npm audit || true
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # FULL HISTORY, so a credential that was committed and later removed is still
+          # caught. Deleting a secret from HEAD does not unpublish it.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

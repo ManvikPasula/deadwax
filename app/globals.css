@@ -1,0 +1,464 @@
+/*
+ * Deadwax — the whole design system in one file.
+ *
+ * Tailwind v4, CSS-first. THERE IS NO `tailwind.config.js` ANYWHERE and there must not be:
+ * PostCSS runs one plugin (`@tailwindcss/postcss`) and every token lives in the `@theme`
+ * block below. Tailwind turns each `--color-X` into the full utility family (`bg-X`,
+ * `text-X`, `ring-X`, `border-X`, and the `X/12` opacity modifiers), each `--font-X` into
+ * `font-X`, and `--radius-card` into `rounded-card`. Adding a token here is the whole job;
+ * there is no second place to register it.
+ *
+ * DARK ONLY. `:root { color-scheme: dark }` and nothing else. There is no `dark:` variant
+ * anywhere in the app, no toggle, no `prefers-color-scheme` query and no light palette. A
+ * second palette would double every contrast measurement below, and the measurements are
+ * the reason the text colours are what they are.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* -- surfaces, darkest to lightest ------------------------------------------------- */
+  --color-ink: #08090b; /* page background, dialog scrim base */
+  --color-surface: #101216; /* .card background */
+  --color-surface-2: #171a20; /* inputs, chips, cover placeholder, hover fill */
+  --color-surface-3: #1f232b; /* scrollbar thumb, meter track, secondary hover */
+  --color-line: #262b34; /* every border and hairline */
+  /* Also the empty-star track, which needs 3:1 as a meaningful graphical object. */
+  --color-line-bright: #5b6472;
+
+  /* -- text -------------------------------------------------------------------------- */
+  --color-paper: #f2f4f7;
+  --color-muted: #a7aeba;
+  /*
+   * A MEASURED VALUE, NOT A TASTE ONE. This was #6b7280, which measures 3.26:1 on
+   * surface-3 and 4.12:1 on the base — both under the 4.5:1 that 11-13px text needs, AND
+   * THAT TEXT CARRIES THE DATES AND TRACK NUMBERS THIS PRODUCT IS MADE OF. #949cab clears
+   * 4.5:1 on every surface in the palette. Do not "soften" it back down: the recurring
+   * literal `text-[0.6875rem]` is 11px and .eyebrow sets the same size, so this colour is
+   * carrying the smallest type in the app.
+   */
+  --color-faint: #949cab;
+
+  /* -- accents ----------------------------------------------------------------------- */
+  --color-amber: #e9b44c; /* the single warm accent: rating, emphasis, focus, primary */
+  --color-amber-bright: #f6c968;
+  --color-teal: #4fd1c5; /* replay / completion ONLY */
+  --color-rose: #e2557b; /* destructive / errors */
+  /*
+   * Desert Island. THE SAME HEX AS THE TOP RATING BRACKET'S `to` COLOUR in lib/ratings.ts,
+   * held here so the honour and the heatmap's peak cannot drift apart. Two literals in two
+   * files with only a comment binding them: change one and the Desert Island badge silently
+   * stops matching the peak of every heatmap.
+   */
+  --color-desert: #57a3ff;
+
+  /* -- geometry and easing ----------------------------------------------------------- */
+  --radius-card: 0.625rem; /* the single card/sleeve radius */
+  --ease-out-quick: cubic-bezier(0.2, 0.8, 0.3, 1); /* the house easing */
+
+  /*
+   * THE SELF-REFERENCE IS DELIBERATE AND IT IS NOT A CYCLE.
+   *
+   * next/font declares `--font-display` / `--font-sans` / `--font-mono` on <html> through a
+   * generated class, UNLAYERED; these declarations live in Tailwind's `theme` cascade layer,
+   * and unlayered declarations beat layered ones regardless of specificity. So the winning
+   * value on <html> is next/font's own family list and the right-hand `var()` never resolves
+   * against itself. If the font classes are ever dropped from <html> the property goes
+   * invalid and type falls back to the browser default — which is the correct failure, since
+   * the alternative is a silently wrong family.
+   *
+   * Fonts are SELF-HOSTED AT BUILD TIME by next/font, WHICH IS WHY `font-src` CAN STAY
+   * 'self' in the CSP. Adding a webfont from a CDN means editing proxy.ts as well.
+   */
+  --font-display: var(--font-display), ui-serif, Georgia, serif; /* Instrument Serif 400 */
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui; /* Geist */
+  --font-mono: var(--font-mono), ui-monospace, monospace; /* Geist Mono */
+}
+
+:root {
+  color-scheme: dark;
+
+  /*
+   * The unrated heatmap cell, and THE ONLY NON-@theme VARIABLE IN THE FILE.
+   *
+   * THE RATING RAMP DELIBERATELY DOES NOT LIVE IN CSS. `ratingColor()` picks a bracket by
+   * score (the bracket sets the HUE) and then lerps between that bracket's two hexes by the
+   * position inside it (which sets the SHADE) — so a 7.6 and an 8.4 are visibly different
+   * while both stay unmistakably "Great". A fixed set of CSS variables cannot express the
+   * second half of that: it can name seven colours, not seven ranges. Only "no rating" is a
+   * single fixed value, so only "no rating" is a variable.
+   *
+   * lib/ratings.ts exports UNRATED_COLOR as the literal string "var(--heat-none)", so this
+   * name is referenced from TypeScript and renaming it here breaks every heatmap.
+   */
+  --heat-none: #22262e;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global element styling                                                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * LOAD-BEARING. A global default so any bare `border` utility is the hairline colour
+ * without naming it, and plenty of places write bare `border`. Removing this does not
+ * produce an obvious break: it produces Tailwind's default hairline in a few dozen places,
+ * which reads as "slightly wrong" rather than as a bug.
+ */
+* {
+  border-color: var(--color-line);
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+
+  /*
+   * NOT COSMETIC. IT IS THE REQUIRED COMPANION TO `.bleed`.
+   *
+   * A full-bleed hero escapes the centred column with `margin-inline: calc(50% - 50vw)`, and
+   * 100vw INCLUDES THE SCROLLBAR. Without this guard every page carrying a hero gains a
+   * horizontal scrollbar exactly the scrollbar's own width wide — which then shifts the
+   * layout, which changes 100vw again.
+   */
+  overflow-x: hidden;
+}
+
+/*
+ * Film grain.
+ *
+ * FIXED RATHER THAN ABSOLUTE, so it reads as emulsion rather than as a texture scrolling
+ * with the content. At z-60 it covers the sticky header (z-50) and sits under dialogs
+ * (z-70/z-80) — see the z-index ladder documented in app/layout.tsx.
+ *
+ * `pointer-events: none` is not decoration: without it the layer eats every click on the
+ * page, because it covers the whole viewport.
+ */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+}
+
+/*
+ * ONE FOCUS RULE FOR THE WHOLE APP: focus is always visible and always amber, so keyboard
+ * travel is legible on every surface. A component adds `focus:outline-none` ONLY when it
+ * replaces this with its own ring — never to remove it.
+ */
+:focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 2px;
+}
+
+/*
+ * Scrollbars: 10px, ink track, surface-3 thumb as an inset pill (the ink border is what
+ * insets it). Horizontal rails opt OUT per element with
+ * `[scrollbar-width:none] [&::-webkit-scrollbar]:hidden`, because a rail that shows a bar
+ * under every row of covers reads as an accident.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-3) var(--color-ink);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: var(--color-ink);
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-surface-3);
+  border: 2px solid var(--color-ink);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-line-bright);
+}
+
+/* -------------------------------------------------------------------------- */
+/* The component vocabulary                                                   */
+/*                                                                            */
+/* Inside @layer components SO TAILWIND UTILITIES STILL WIN. A caller writing  */
+/* `<div className="card bg-surface-2">` must get surface-2; if these classes  */
+/* were unlayered they would beat the utility and the escape hatch would be    */
+/* silently dead.                                                             */
+/* -------------------------------------------------------------------------- */
+
+@layer components {
+  /*
+   * THE MOST-USED CLASS IN THE APP: every section label and every form label. 11px, which
+   * is the same size as the recurring `text-[0.6875rem]` literal and the reason
+   * --color-faint had to be lifted to #949cab.
+   */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1.2;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-faint);
+  }
+
+  /*
+   * A label followed by a hairline that fades out across whatever width is left.
+   *
+   * The gradient direction matters: it starts at --color-line and ends transparent, so the
+   * rule reads as trailing off rather than as an underline that stops.
+   */
+  .section-rule {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .section-rule::after {
+    content: "";
+    flex: 1 1 auto;
+    height: 1px;
+    background-image: linear-gradient(to right, var(--color-line), transparent);
+  }
+
+  /*
+   * THE KEY GEOMETRIC PRIMITIVE, AND IT IS 1/1 — NOT 2/3.
+   *
+   * This is the one hard geometric change from the television original, where the same class
+   * was `.poster` at `aspect-ratio: 2/3`. ALBUM ART IS SQUARE, and everything downstream of
+   * that changes with it: the grid keeps six columns at `lg` but drops to `gap-y-5` from the
+   * 2:3 grid's `gap-y-6` (a square loses the extra vertical rhythm a tall poster needs), the
+   * rail child widths are re-proportioned, and the hero has no tall crop to work with.
+   * Changing this line back to 2/3 would not error anywhere — it would just quietly letterbox
+   * every cover in the product.
+   *
+   * THE `.group:hover` SELECTOR IS WHAT LETS A WRAPPING <Link className="group"> DRIVE THE
+   * LIFT. The cover itself is never the hover target, so the caption and the sleeve respond
+   * together from one link.
+   */
+  .sleeve {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    border-radius: var(--radius-card);
+    background-color: var(--color-surface-2);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+    transition:
+      transform 160ms var(--ease-out-quick),
+      box-shadow 160ms var(--ease-out-quick);
+  }
+
+  .group:hover .sleeve {
+    transform: translateY(-3px);
+    box-shadow:
+      inset 0 0 0 1px var(--color-amber),
+      0 14px 30px -14px rgb(0 0 0 / 0.8);
+  }
+
+  /*
+   * Two stacked gradients, to-top and to-right, SO HERO TEXT ALWAYS LANDS ON A DARK FIELD.
+   *
+   * Neither music provider returns a backdrop image, so the hero's "image" is the cover
+   * itself, scaled and blurred behind the content. That makes the scrim MORE important than
+   * it was in television, not less: a blurred square of bright artwork is a far less
+   * predictable field than a 16:9 still.
+   */
+  .hero-scrim {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(to top, var(--color-ink) 0%, rgb(8 9 11 / 0.6) 45%, transparent 100%),
+      linear-gradient(to right, var(--color-ink) 0%, rgb(8 9 11 / 0.35) 55%, transparent 100%);
+  }
+
+  .hero-vignette {
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(120% 80% at 50% 30%, transparent 40%, rgb(0 0 0 / 0.55) 100%);
+  }
+
+  .card {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+  }
+
+  /*
+   * Escapes the centred column so a hero reaches both window edges. DEPENDS ON THE
+   * `overflow-x: hidden` GUARD ON body — see the comment there.
+   */
+  .bleed {
+    margin-inline: calc(50% - 50vw);
+  }
+
+  /* 1px blocks bracketing a title block, like letterbox bars around a frame. */
+  .letterbox {
+    position: relative;
+    padding-block: 1.25rem;
+  }
+
+  .letterbox::before,
+  .letterbox::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    height: 1px;
+    background-color: var(--color-line);
+  }
+
+  .letterbox::before {
+    top: 0;
+  }
+
+  .letterbox::after {
+    bottom: 0;
+  }
+}
+
+@layer utilities {
+  /*
+   * Tailwind v4 ships a `text-balance` utility of its own, so this rule is a duplicate with
+   * identical declarations — kept on purpose. These two names are part of the hand-written
+   * vocabulary alongside `.eyebrow` and `.card`, and Tailwind only generates a utility it can
+   * SEE as literal text in a scanned file. A class name that arrives from a constant map or a
+   * database row is invisible to the scanner; a declared rule is not.
+   */
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /*
+   * ON EVERY MONO NUMBER. Without tabular figures a count that ticks over, a duration
+   * column and a track-number gutter all jitter horizontally as the digits change width,
+   * and a diary is mostly numbers.
+   */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Motion                                                                     */
+/* -------------------------------------------------------------------------- */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * SIX HARD-CODED DELAY STEPS, THEN EVERYTHING FROM THE SEVENTH CHILD IS PINNED AT 180ms —
+ * so a 24-card grid does not take four seconds to land. Multiplying the index instead means
+ * the last card of a full page arrives 690ms after the first and the grid reads as loading
+ * rather than as arriving.
+ *
+ * Baked into CoverGrid, so every grid gets the stagger and rails deliberately do not: a rail
+ * scrolls horizontally, so its later children are off-screen and animating them is work
+ * nobody sees.
+ */
+.stagger > * {
+  animation: rise 420ms var(--ease-out-quick) both;
+}
+
+.stagger > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger > *:nth-child(2) {
+  animation-delay: 30ms;
+}
+.stagger > *:nth-child(3) {
+  animation-delay: 60ms;
+}
+.stagger > *:nth-child(4) {
+  animation-delay: 90ms;
+}
+.stagger > *:nth-child(5) {
+  animation-delay: 120ms;
+}
+.stagger > *:nth-child(6) {
+  animation-delay: 150ms;
+}
+.stagger > *:nth-child(n + 7) {
+  animation-delay: 180ms;
+}
+
+/*
+ * The home hero's cross-fading frames. DURATION AND DELAY ARE SET INLINE by the component
+ * (`frames.length * 7`s and `index * 7 - 7`s) because they depend on how many frames there
+ * are; only the shape of the fade lives here. The negative delay on frame 0 is what makes
+ * the visible order at t=0 start on frame 1 rather than mid-fade.
+ */
+@keyframes hero-frame {
+  0%,
+  14% {
+    opacity: 1;
+  }
+  20%,
+  94% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.hero-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation-name: hero-frame;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-fill-mode: both;
+}
+
+/*
+ * TWO SEPARATE REDUCED-MOTION BLOCKS, DOING DIFFERENT JOBS. Keep them separate.
+ *
+ * THE FIRST kills the hero specifically and shows only the first frame. A slow cross-fade is
+ * still motion, and this is decoration — THERE IS NOTHING TO DEGRADE GRACEFULLY TO, so it
+ * degrades to a still image. Running it through the blanket switch below instead would
+ * collapse the loop to 0.001ms and leave whichever frame the cascade happened to favour
+ * visible, which is not the same thing as choosing one.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .hero-frame {
+    animation: none;
+    opacity: 0;
+  }
+
+  .hero-frame:first-child {
+    opacity: 1;
+  }
+}
+
+/*
+ * THE SECOND is the blanket kill switch. It runs after the hero block so `animation-duration`
+ * cannot resurrect the loop: the hero's `animation-name: none` above is untouched by it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
+}

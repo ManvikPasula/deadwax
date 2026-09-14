@@ -278,9 +278,40 @@ isCanonical =
   && !TITLE_NOISE.test(title);                    // (Deluxe|Remaster|Anniversary|Expanded|Bonus|Live at|Karaoke|Instrumental)
 ```
 
-`TITLE_NOISE` is a last resort, applied only when MusicBrainz has not been reached, and it
-is unit-tested against a fixture list of real titles in both directions (`"Kid A"` canonical;
-`"OK Computer OKNOTOK 1997 2017"`, `"Abbey Road (Super Deluxe)"`, `"Live at Wembley"` not).
+The title check is a last resort, applied only when MusicBrainz has not been reached, and it
+is unit-tested against a fixture list of real titles in both directions.
+
+**Two corrections were forced by running it against the real catalogue rather than reasoning
+about it**, and both are worth recording because the first version was defensible in the
+abstract and wrong in practice:
+
+1. **Position is the wrong thing to anchor on.** The first version was one regex requiring the
+   noise word to follow the bracket immediately, which let
+   `"Nevermind (30th Anniversary Super Deluxe)"` through — the bracket opens on `"30th"`, not
+   on `"Anniversary"`. Real-world qualifiers routinely lead with an ordinal or a year, so the
+   check now extracts every bracketed group and dash-tail and tests their **contents**.
+2. **"Remastered" is not noise.** The first version rejected it. Resolving a curated list of
+   forty canonical records against the live API showed why that is wrong: **the only edition
+   Deezer stocks of Nevermind, Abbey Road, London Calling, Trans-Europe Express and Daydream
+   Nation is the remaster.** A remaster of a studio album *is* the studio album — same work,
+   same tracklist, same running order — so rejecting it does not exclude a duplicate, it
+   excludes **the album**, and the artist's discography grid loses a row it should have.
+
+   The rule is therefore narrowed to releases that are **a different kind of thing** from the
+   studio album: live recordings, compilations, karaoke and instrumental versions, demos
+   collections, tributes, and boxes that pad the tracklist far past the record
+   (`Super Deluxe`, `Box Set`, `The Complete …`) — because those genuinely do corrupt a
+   completion denominator and genuinely do put a 65-cell row next to a 10-cell one.
+
+   **Duplicate editions are not this function's job.** They are handled at dedup time by
+   `albumIdentity()`, which is the right split: canonicality asks *"is this a studio album?"*,
+   deduplication asks *"have we already got this one?"*
+
+A third class needed its own check: titles that are non-canonical **as whole titles**, with no
+bracket to look inside — `"Greatest Hits"`, `"MTV Unplugged in New York"`,
+`"The Complete Recordings"`. And one asymmetry is deliberate: a **bare** `(Live)` qualifier is
+enough to disqualify a release, while the whole-title rule requires a preposition
+(`Live at …`), so that `"Live Through This"` survives.
 
 **Deduplication must get stricter, not merely renamed** (brief §7). The same album exists as
 original / remaster / deluxe / 2CD / Japanese pressing, with different titles *and* different

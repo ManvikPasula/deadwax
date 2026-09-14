@@ -26,7 +26,7 @@ import {
   mapTrack,
 } from "@/lib/providers/deezer/mappers";
 import type { DeezerAlbumSummary } from "@/lib/providers/deezer/types";
-import { findReleaseGroup, getArtist as getMbArtist } from "@/lib/providers/musicbrainz";
+import { findReleaseGroup, getArtist as getMbArtist, getReleaseGroupOutcome } from "@/lib/providers/musicbrainz";
 import { mapAlbumEnrichment, mapArtistEnrichment } from "@/lib/providers/musicbrainz/mappers";
 import { slugify } from "@/lib/slug";
 
@@ -347,16 +347,64 @@ export async function enrichAlbumFromMusicBrainz(albumId: number): Promise<void>
   if (!album) return;
   if (album.mbSyncedAt && Date.now() - album.mbSyncedAt.getTime() < MUSICBRAINZ_TTL) return;
 
-  const group = await findReleaseGroup(album.artist?.name ?? "", album.title);
-  if (!group) {
-    // Stamp anyway, so a title that simply has no MusicBrainz match is not re-queried on
-    // every view for the next month. This is the difference between an optional provider and
-    // a provider that costs you a request per page load forever.
+  /**
+   * TWO REQUESTS, AND IT HAS TO BE TWO.
+   *
+   * The MusicBrainz SEARCH endpoint and the LOOKUP endpoint return different shapes, and the
+   * difference is the entire enrichment:
+   *
+   *   /release-group?query=…   ->  id, score, title, first-release-date, primary-type,
+   *                                artist-credit, releases, tags
+   *   /release-group/{mbid}    ->  …plus RATING, GENRES, SECONDARY-TYPES, disambiguation
+   *
+   * `inc=ratings+genres` is accepted on the search URL and silently ignored. The first version
+   * of this function called search only, so it resolved MBIDs and first-release dates
+   * correctly — which is why the reissue fix appeared to work — while producing a catalogue
+   * with `critic_votes = 0` on every single row. A whole seeding run looked successful and the
+   * consensus card, the feature this provider exists for, was never reachable.
+   *
+   * It was also quietly WRONG rather than merely incomplete: with no `secondary-types` in the
+   * payload, the `is_canonical` recompute below ran with an empty array and
+   * `musicbrainzKnown: true`, so it trusted "no secondary types" as a checked-and-clean answer
+   * when in fact nothing had been checked.
+   *
+   * Once an album has an mbid the search is skipped, so the steady-state cost is one request.
+   */
+  const resolved = album.mbid
+    ? ({ status: "found", value: { id: album.mbid } } as const)
+    : await findReleaseGroup(album.artist?.name ?? "", album.title);
+
+  if (resolved.status === "unavailable") return;
+  if (resolved.status === "absent") {
     await db.update(albums).set({ mbSyncedAt: new Date() }).where(eq(albums.id, albumId));
     return;
   }
 
-  const enrichment = mapAlbumEnrichment(group);
+  const found = await getReleaseGroupOutcome(resolved.value.id);
+
+  /**
+   * THREE OUTCOMES, AND ONLY TWO OF THEM MAY BE CACHED.
+   *
+   *   found       — write the enrichment and stamp.
+   *   absent      — stamp, so a title with genuinely no MusicBrainz match is not re-queried on
+   *                 every page view for the next month. This is the difference between an
+   *                 optional provider and a provider that costs a request per page load
+   *                 forever.
+   *   unavailable — DO NOT STAMP. Leave the row unenriched so the next view tries again.
+   *
+   * The first version of this function collapsed `absent` and `unavailable` into one null and
+   * stamped both, which is how a five-minute MusicBrainz outage became thirty days of
+   * permanent absence: the first seeding run stamped an entire 37-album batch during a busy
+   * spell and produced a catalogue with `critic_votes = 0` everywhere — no consensus card at
+   * all, from an endpoint verified working minutes earlier.
+   */
+  if (found.status === "unavailable") return;
+  if (found.status === "absent") {
+    await db.update(albums).set({ mbSyncedAt: new Date() }).where(eq(albums.id, albumId));
+    return;
+  }
+
+  const enrichment = mapAlbumEnrichment(found.value);
   await db
     .update(albums)
     .set({
@@ -376,6 +424,30 @@ export async function enrichAlbumFromMusicBrainz(albumId: number): Promise<void>
       mbSyncedAt: new Date(),
     })
     .where(eq(albums.id, albumId));
+
+  /**
+   * Propagate the artist MBID we were just handed for free.
+   *
+   * This is the only cheap source of one: resolving an artist MBID by search would cost a
+   * request per artist against the flakiest provider in the stack. Writing it here is what
+   * makes `enrichArtistFromMusicBrainz` able to run at all on a later pass — and therefore
+   * what makes `artists.critic_score` reachable, which the artist page's consensus card needs.
+   */
+  if (enrichment.artistMbid) {
+    const artist = await db.query.artists.findFirst({
+      where: eq(artists.id, album.artistId),
+      columns: { id: true, mbid: true },
+    });
+    if (artist && !artist.mbid) {
+      await db
+        .update(artists)
+        // onConflictDoNothing is not available on an UPDATE, and two albums by one artist can
+        // race here. `artists_mbid_uq` would then reject the second write, so the update is
+        // guarded rather than allowed to throw into the caller's page render.
+        .set({ mbid: enrichment.artistMbid })
+        .where(and(eq(artists.id, artist.id), isNull(artists.mbid)));
+    }
+  }
 }
 
 export async function enrichArtistFromMusicBrainz(artist: Artist): Promise<void> {
@@ -494,11 +566,6 @@ export async function cacheAlbumSummaries(
 
     // Resolve artists first. Deduped, so twelve albums by one artist cost one lookup.
     const artistIds = new Map<string, number>();
-    if (knownArtistId !== undefined) {
-      for (const summary of summaries) {
-        if (summary.artist?.id) artistIds.set(String(summary.artist.id), knownArtistId);
-      }
-    }
     for (const summary of summaries) {
       const ref = summary.artist;
       if (!ref?.id) continue;
@@ -513,10 +580,36 @@ export async function cacheAlbumSummaries(
         const key = String(summary.id);
         if (seen.has(key)) return false; // detail 2
         seen.add(key);
-        return Boolean(summary.artist?.id);
+        return true;
       })
-      .map((summary) => mapAlbumSummary(summary, artistIds.get(String(summary.artist!.id))!, vocab))
-      .filter((row) => Number.isInteger(row.artistId));
+      .map((summary) => {
+        /**
+         * `knownArtistId` IS THE FALLBACK, NOT A HINT — and getting that backwards cost 38
+         * silently-dropped rows.
+         *
+         * `GET /artist/{id}/albums` returns summaries with NO `artist` OBJECT AT ALL (verified:
+         * the keys are id, title, link, cover*, md5_image, genre_id, fans, release_date,
+         * record_type, tracklist, explicit_lyrics, type — and nothing else). The first version
+         * of this function read `knownArtistId` only for rows that already carried an artist,
+         * and then filtered out every row that did not — so a discography fill inserted
+         * NOTHING, reported success, and left the artist page with the two albums the seed had
+         * mirrored by hand.
+         *
+         * That is the exact silent-failure shape the brief records for the television version:
+         * "every summary cache write failed silently — the console line was there, the
+         * candidates were simply untagged." Hence the explicit count logged below.
+         */
+        const artistId = summary.artist?.id ? artistIds.get(String(summary.artist.id)) : knownArtistId;
+        return artistId === undefined ? null : mapAlbumSummary(summary, artistId, vocab);
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null && Number.isInteger(row.artistId));
+
+    const dropped = summaries.length - rows.length;
+    if (dropped > 0) {
+      // Never silent. A summary that cannot be attributed to an artist is a row the
+      // recommender will never see, and the failure is invisible from the interface.
+      console.warn(`[ingest] summary cache: dropped ${dropped} of ${summaries.length} rows with no resolvable artist`);
+    }
 
     if (rows.length === 0) return;
 

@@ -44,15 +44,86 @@ export const NON_CANONICAL_SECONDARY_TYPES = new Set([
 export const CANONICAL_RECORD_TYPES = new Set(["album"]);
 
 /**
- * The last resort, applied only when MusicBrainz has not been reached.
+ * The noise vocabulary, applied only when MusicBrainz has not been reached.
  *
- * Deliberately conservative: it matches suffix-shaped noise, not any occurrence of the words.
- * "Live at Wembley" is excluded; the band Live is not, and neither is an album legitimately
- * titled "Deluxe" on its own. Every entry here is anchored to a bracket, a dash-tail, or the
- * start of a trailing qualifier.
+ * TWO PROPERTIES, and the second was learned the hard way.
+ *
+ * First: a word from this list only disqualifies a release when it appears INSIDE A TRAILING
+ * QUALIFIER — a bracketed group or a dash-tail — not anywhere in the title. That is what keeps
+ * "Live Through This" and "Demolition Plot J-7" canonical while rejecting
+ * "Nevermind (30th Anniversary Super Deluxe)".
+ *
+ * Second, and more important: **"REMASTERED" AND A BARE "ANNIVERSARY EDITION" ARE NOT NOISE.**
+ * The first version of this list rejected them, which is defensible in the abstract and wrong
+ * in practice. Resolving a curated list of forty canonical records against the live catalogue
+ * showed why: the only edition Deezer stocks of Nevermind, Abbey Road, London Calling,
+ * Trans-Europe Express and Daydream Nation is the remaster. A remaster of a studio album IS
+ * the studio album — it is the same work, the same tracklist and the same running order — so
+ * rejecting it does not exclude a duplicate, it excludes THE ALBUM, and the artist's
+ * discography grid loses a row it should have.
+ *
+ * What genuinely belongs here is a release that is A DIFFERENT KIND OF THING from the studio
+ * album: a live recording, a compilation, a karaoke or instrumental version, a demos
+ * collection — or a BOX that pads the tracklist far past the record (a "Super Deluxe" or
+ * "Complete" edition), because those really do corrupt a completion denominator and really do
+ * make a 65-cell row next to a 10-cell one.
+ *
+ * Duplicate EDITIONS are not this function's job. They are handled at dedup time by
+ * albumIdentity(), which is the right place: canonicality asks "is this a studio album?",
+ * deduplication asks "have we already got this one?".
  */
-export const TITLE_NOISE =
-  /(?:\(|\[|\s[-–—]\s)\s*(?:deluxe|super\s*deluxe|expanded|remaster(?:ed)?|anniversary|bonus|special\s+edition|collector'?s?\s+edition|legacy\s+edition|reissue|mono|stereo|instrumental(?:s)?|karaoke|acoustic\s+version|live\s+(?:at|from|in)|demos?|b[-\s]?sides|rarities|the\s+complete)\b|\b(?:\d{4}\s+remaster(?:ed)?|remaster(?:ed)?\s+\d{4})\b|^\s*(?:live\s+(?:at|from|in)\b)/i;
+const NOISE_WORDS =
+  // A BARE `live` is enough HERE but not in WHOLE_TITLE_NOISE, and the asymmetry is the point:
+  // this regex only ever runs against an extracted bracketed qualifier or dash-tail, where
+  // "(Live)" or "[Live 1972]" is unambiguous. Requiring a preposition — as the whole-title
+  // rule must, so that "Live Through This" survives — let "Homogenic (Live)" through.
+  /\b(?:live|super\s*deluxe|mega\s*deluxe|box\s*set|the\s+complete|complete\s+(?:recordings|collection|works)|anthology|greatest\s+hits|best\s+of|karaoke|instrumentals?|tribute|originally\s+performed|made\s+famous\s+by|ukulele|demos|b[-\s]?sides|rarities|outtakes|unplugged|in\s+concert|remix(?:es|ed))\b/i;
+
+/**
+ * Titles that are non-canonical AS WHOLE TITLES, with no bracket or dash-tail to look inside.
+ *
+ * The qualifier-extraction approach cannot see these: "Greatest Hits", "MTV Unplugged in New
+ * York" and "The Complete Recordings" carry no trailing qualifier at all, so a
+ * contents-of-the-qualifier test finds nothing and lets them through. They are a different
+ * class and need a different check.
+ *
+ * Deliberately short. Every entry here is a phrase that cannot plausibly be the title of a
+ * studio album, which is a much higher bar than "contains a suspicious word".
+ */
+const WHOLE_TITLE_NOISE =
+  /^\s*live\s+(?:at|from|in|on)\b|\bgreatest\s+hits\b|\bbest\s+of\b|^\s*the\s+(?:complete|very\s+best)\b|\banthology\b|\bunplugged\b|\bin\s+concert\b|\bkaraoke\b|\bthe\s+singles\s+collection\b/i;
+
+/**
+ * NOTE the absence of a year-remaster rule here. An earlier version rejected
+ * "OK Computer - 2017 Remaster" and "Trans-Europe Express (2009 Remaster)" on exactly that
+ * pattern, which turned out to exclude the only edition of those records the catalogue
+ * carries. See the NOISE_WORDS docblock.
+ */
+
+/**
+ * Extracts trailing qualifiers: every bracketed group, plus anything after a spaced dash.
+ *
+ * Splitting the extraction from the matching is what fixed a real miss. The first version was
+ * a single regex anchored so the noise word had to follow the bracket immediately, which let
+ * "Nevermind (30th Anniversary Super Deluxe)" through — because the bracket opens on "30th",
+ * not on "Anniversary". Real-world qualifiers routinely lead with an ordinal or a year, so
+ * position is the wrong thing to anchor on; the CONTENTS of the qualifier are what matter.
+ */
+function qualifiers(title: string): string[] {
+  const found: string[] = [];
+  for (const match of title.matchAll(/[([{]([^)\]}]*)[)\]}]/g)) {
+    if (match[1]) found.push(match[1]);
+  }
+  const dashTail = /\s+[-–—]\s+(.+)$/.exec(title);
+  if (dashTail?.[1]) found.push(dashTail[1]);
+  return found;
+}
+
+/** True when a title looks like a non-canonical release. Exported for its test. */
+export function hasTitleNoise(title: string): boolean {
+  if (WHOLE_TITLE_NOISE.test(title)) return true;
+  return qualifiers(title).some((part) => NOISE_WORDS.test(part));
+}
 
 export type CanonicalInput = {
   /** Deezer record_type: album | single | ep | compilation */
@@ -92,7 +163,7 @@ export function isCanonicalRelease(input: CanonicalInput): boolean {
   // containing the word "Club".
   if (input.musicbrainzKnown && secondary.length === 0) return true;
 
-  return !TITLE_NOISE.test(input.title);
+  return !hasTitleNoise(input.title);
 }
 
 /**
