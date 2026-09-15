@@ -45,6 +45,7 @@ import {
   getLikedLogIds,
   getRecentReviews,
   getReviews,
+  REVIEW_PAGE_SIZE,
 } from "@/lib/db/queries/logs";
 import { getListOptions, getPublicLists } from "@/lib/db/queries/lists";
 import {
@@ -137,10 +138,26 @@ async function main(): Promise<void> {
     // consensus card is working.
     console.warn("  note  no critic scores are mirrored yet — the consensus card will not render anywhere");
   } else {
+    /*
+     * TWO-SIDED, and the second bound is the one that was missing.
+     *
+     * `hi > 5` catches the doubling being REMOVED — scores collapse back to 0..5. It cannot
+     * catch a second conversion site being ADDED, which is the failure the paragraph above
+     * names as undetectable anywhere else: `mbRatingToStored` applied twice puts a 4.5 album at
+     * 18, `hi` becomes ~20, and `20 > 5` reports green. Nothing else in the system would fail
+     * either — there are zero CHECK constraints in the schema, `asStars` is a bare cast with no
+     * clamp, and `criticToStars` divides by two without a bound, so an 18 renders as a cheerful
+     * "9" beside a five-star glyph row.
+     *
+     * A one-sided bound on a bridge between two scales can only ever detect one of the two ways
+     * the bridge breaks.
+     */
+    const lo = Number(criticRow!.lo);
+    const hi = Number(criticRow!.hi);
     check(
-      "critic scores are on the stored 0-10 scale, not MusicBrainz's 0-5",
-      Number(criticRow!.hi) > 5,
-      `${criticRow!.n} albums, range ${Number(criticRow!.lo).toFixed(1)}-${Number(criticRow!.hi).toFixed(1)}`,
+      "critic scores sit inside the stored 1-10 scale, not MusicBrainz's 0-5 and not double it",
+      hi > 5 && hi <= 10 && lo >= 0,
+      `${criticRow!.n} albums, range ${lo.toFixed(1)}-${hi.toFixed(1)}`,
     );
   }
 
@@ -320,10 +337,26 @@ async function main(): Promise<void> {
    * conditions ladder, and the two functions must be edited together — "a '12 reviews' heading
    * over ten visible ones is the kind of mismatch that looks like a bug in the list."
    */
-  check("the review count agrees with the review list", reviewCount >= reviews.length, `${reviewCount} counted, ${reviews.length} returned`);
+  /*
+   * EQUALITY WHEN THE LIST DID NOT FILL ITS PAGE, and only then.
+   *
+   * `>=` was the original predicate and it permits exactly the case the paragraph above quotes:
+   * "12 reviews" over ten visible ones satisfies `12 >= 10`. The check could only fail in the
+   * opposite direction, which requires the count to be SMALLER than the list — a shape neither
+   * function can produce.
+   *
+   * The conditional is not a hedge: once the list hits `REVIEW_PAGE_SIZE` the count is
+   * legitimately larger, because the page is a window. Under the limit there is no window and
+   * the two numbers must be the same number.
+   */
+  check(
+    "the review count agrees with the review list",
+    reviews.length < REVIEW_PAGE_SIZE ? reviewCount === reviews.length : reviewCount >= reviews.length,
+    `${reviewCount} counted, ${reviews.length} returned${reviews.length < REVIEW_PAGE_SIZE ? "" : " (page full, count may exceed)"}`,
+  );
 
   const liked = await getLikedLogIds(member.id, diary.slice(0, 5).map((entry) => entry.id));
-  check("getLikedLogIds returns a Set and survives a short id list", liked instanceof Set);
+  check("getLikedLogIds returns a Set over a short id list", liked instanceof Set);
   check("getLikedLogIds guards the empty array (IN () is invalid SQL)", (await getLikedLogIds(member.id, [])) instanceof Set);
 
   const counts = await getFollowCounts(member.id);
@@ -353,7 +386,18 @@ async function main(): Promise<void> {
   check("list cards carry a cover mosaic", (publicLists[0] as { previews?: unknown[] }).previews !== undefined);
 
   const options = await getListOptions(member.id, { artistId: artist.id, albumId: album.id });
-  check("list options report membership over the full target tuple", Array.isArray(options), `${options.length} lists`);
+  /*
+   * ASSERTS THE MEMBERSHIP FLAG, not the return type.
+   *
+   * `Array.isArray(options)` was the old predicate: `getListOptions` is declared to return an
+   * array, so it could not be false, and the check's name promised a property nothing tested.
+   * A named assertion that cannot fail is worse than no assertion — it reads as coverage.
+   */
+  check(
+    "list options report membership over the full target tuple",
+    options.length > 0 && options.every((option) => typeof option.containsTarget === "boolean"),
+    `${options.length} lists, ${options.filter((option) => option.containsTarget).length} containing this album`,
+  );
 
   console.info("\n[9] browse and search");
 
@@ -367,7 +411,28 @@ async function main(): Promise<void> {
   const real = await searchLocalAlbums(SEED_SEARCH_TERM);
   const wildcard = await searchLocalAlbums("%");
   check("local album search finds a seeded title", real.length > 0, `${real.length} hits for "${SEED_SEARCH_TERM}"`);
-  check("a bare % does not match every album", wildcard.length === 0, `${wildcard.length} hits for "%"`);
+  /*
+   * ASSERTS THAT EVERY HIT ACTUALLY CONTAINS A PERCENT SIGN, not that there are no hits.
+   *
+   * `wildcard.length === 0` was the predicate, and it rotted the moment the catalogue contained
+   * a record with `%` in its title — which it now does: ten of them arrived from Deezer when
+   * something searched a literal "%", with titles like "%", "%1" and "%APPDATA%". The check went
+   * red while the escaping it guards was working perfectly.
+   *
+   * That is the same defect class as two other assertions in this repository (a byte-size proxy
+   * for a rate limit, and a count-versus-list `>=`): a property measured through a stand-in that
+   * only held for the data of the day. The real property is "an escaped `%` is a LITERAL percent
+   * sign, so it can only match rows that contain one" — which is checkable against every row
+   * returned, holds at any catalogue size, and fails loudly if `escapeLike` is ever removed,
+   * because then the first hits would be arbitrary popular albums with no `%` anywhere in them.
+   */
+  const unescaped = wildcard.filter((row) => !row.title.includes("%") && !row.artistName.includes("%"));
+  check(
+    "a bare % is escaped to a literal, so it matches only rows containing one",
+    unescaped.length === 0,
+    `${wildcard.length} hits for "%", ${unescaped.length} of them without a percent sign` +
+      (unescaped[0] ? ` (e.g. "${unescaped[0].title}")` : ""),
+  );
   check("local artist search runs", Array.isArray(await searchLocalArtists("radio")));
 
   console.info("\n[10] rankings");

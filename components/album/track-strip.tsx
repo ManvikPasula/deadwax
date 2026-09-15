@@ -62,6 +62,8 @@ export type StripSource = "member" | "critic" | "mine";
 
 const SOURCE_NOTES: Record<StripSource, string> = {
   member: "Community average — one vote per member.",
+  // NOTHING WRITES `tracks.critic_score` (see lib/taste/tracks.ts), so this source is inert
+  // today and no caller selects it. Kept because the column and the scale are correct.
   critic: "MusicBrainz per-recording ratings.",
   mine: "Your own ratings.",
 };

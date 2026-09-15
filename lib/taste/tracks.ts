@@ -81,7 +81,22 @@ const CRITIC_BASELINE_MIN = 2;
 export type TrackForecastInput = {
   disc: number;
   track: number;
-  /** MusicBrainz per-recording rating, ALREADY on the stored 0..10 scale. Usually null. */
+  /**
+   * MusicBrainz per-recording rating, ALREADY on the stored 0..10 scale.
+   *
+   * ALWAYS NULL TODAY, and that is a missing writer rather than missing data upstream.
+   * `mapTrack` does not set it, the tracks upsert deliberately omits it ("MusicBrainz owns
+   * them"), and `enrichAlbumFromMusicBrainz` only touches `albums` and `artists` — so nothing
+   * in the repository ever writes `tracks.critic_score`. Filling it needs MusicBrainz
+   * `recording` lookups matched to mirrored tracks by ISRC, which is one more request per album
+   * against the flakiest dependency in the stack, so it is deliberately not built.
+   *
+   * The consequence, stated so nobody debugs a signal that is structurally absent: the critic
+   * term below contributes nothing, every track's forecast falls back to the viewer or album
+   * baseline, and the shape is one flat value per album modulated only by the member's own
+   * ratings. The code path stays because the column and the scale are right — the day a writer
+   * exists, the model starts using it with no further change.
+   */
   criticScore: number | null;
   /** The viewer's own rating for this track, stored 1..10, or null. */
   viewerRating: number | null;

@@ -47,6 +47,13 @@ export type ConsensusProps = {
    * albums both carry real attributed figures and want the plain name.
    */
   label?: string;
+  /**
+   * The footnote shown when there is no critic baseline. A prop because this component serves
+   * all three tiers and "No critic baseline for this release" is false on an artist page — an
+   * artist is not a release. The default keeps every existing album and track call site as it
+   * was.
+   */
+  missingCriticNote?: string;
   className?: string;
 };
 
@@ -56,6 +63,7 @@ export function Consensus({
   memberAverage,
   memberCount,
   label = "MusicBrainz",
+  missingCriticNote = "No critic baseline for this release",
   className,
 }: ConsensusProps) {
   /**
@@ -97,7 +105,7 @@ export function Consensus({
 
       <p className="mt-3 border-t border-line pt-3 text-[0.6875rem] leading-relaxed text-faint">
         {!hasCritic
-          ? "No critic baseline for this release"
+          ? missingCriticNote
           : lowConfidence
             ? /* VERBATIM. The sentence names which number to read and why, which is the whole
                  job of the low-confidence state. */

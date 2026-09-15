@@ -118,7 +118,12 @@ export default async function ForYouPage() {
 
         <EmptyState
           className="mt-8"
-          title={result.title}
+          /*
+           * NO `title`. The h1 above already carries `result.title`, and `EmptyState` renders
+           * its own title in the same display serif — so passing it here printed the identical
+           * sentence twice in a row, separated only by the card's border. The heading states
+           * the verdict; the card states the reason.
+           */
           description={result.message}
           action={
             <div className="flex flex-col items-center gap-4">

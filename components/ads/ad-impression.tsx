@@ -91,6 +91,17 @@ export function AdImpression({ adId }: AdImpressionProps) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ adId }),
         keepalive: true,
+        /*
+         * `credentials: "omit"` MAKES THE PRIVACY CLAIM STRUCTURAL RATHER THAN CONDITIONAL.
+         *
+         * The endpoint reads no session and `ad_stats` has no member column, so "nothing about
+         * who saw it is stored" was already true — but a same-origin `fetch` defaults to
+         * sending credentials, so the session cookie was arriving on every impression and the
+         * guarantee rested entirely on the handler continuing to ignore it. Withholding it
+         * costs nothing here and means a future handler CANNOT read a session it was never
+         * sent.
+         */
+        credentials: "omit",
       }).catch(() => {});
     }
 

@@ -432,6 +432,25 @@ export const logs = pgTable(
   },
   (table) => [
     index("logs_user_created_idx").on(table.userId, table.createdAt), // feed, profile
+    /*
+     * THE GLOBAL READS, which every other index on this table cannot serve.
+     *
+     * Seven indexes existed and all seven lead with `user_id`, `album_id` or `artist_id`. Three
+     * reads have none of those in their predicate: `getGlobalFeed` (ORDER BY created_at DESC
+     * LIMIT 24), `getRecentReviews` (review IS NOT NULL, same order) and `getMostRatedAlbums`
+     * (a DISTINCT ON across every album-level log). All three run on `/`, which declares
+     * `revalidate = 0` — so the home page was a sequential scan of the whole table on every
+     * request, and `logs` is the table that grows fastest by design (a replay is a new row).
+     *
+     * The partial index is the one that matters most: reviews are a small minority of log rows,
+     * so `WHERE review IS NOT NULL` keeps the index a fraction of the table's size while making
+     * `getRecentReviews` a bounded scan of exactly the rows it wants.
+     */
+    index("logs_created_idx").on(table.createdAt),
+    index("logs_listened_idx").on(table.listenedOn),
+    index("logs_review_created_idx")
+      .on(table.createdAt)
+      .where(sql`${table.review} IS NOT NULL`),
     index("logs_user_listened_idx").on(table.userId, table.listenedOn), // diary
     // "what did this member rate for this target" -> the DISTINCT ON aggregates
     index("logs_target_user_idx").on(

@@ -34,7 +34,7 @@ import { AvatarWithName } from "@/components/ui/avatar";
 import { Eyebrow } from "@/components/ui/primitives";
 import type { CommentEntry } from "@/lib/db/queries/logs";
 import type { MemberSummary } from "@/lib/db/queries/users";
-import { formatRelative, plural } from "@/lib/format";
+import { formatDate, formatRelative, plural } from "@/lib/format";
 import { MAX_COMMENT_BODY } from "@/lib/security/schemas";
 import { cn } from "@/lib/utils";
 
@@ -242,6 +242,59 @@ export function CommentThread({
   );
 }
 
+/**
+ * A relative timestamp that cannot produce a hydration mismatch.
+ *
+ * `formatRelative` defaults its second argument to `new Date()`, so calling it in the render
+ * body of a CLIENT component computes the string twice against two different clocks — once on
+ * the server during SSR, once in the browser at hydration. Whenever a comment's age crosses 60
+ * seconds, 60 minutes or 24 hours between those two moments the two strings differ and React
+ * logs a mismatch. Every other `formatRelative` call site in the app is inside a Server
+ * Component, where it happens exactly once; this was the only client one.
+ *
+ * So the first render — server and client alike — shows the ABSOLUTE date, which is the same
+ * string on both sides by construction, and an effect swaps in the relative form after mount.
+ * Two things fall out of that beyond correctness: a reader with no JavaScript gets a real date
+ * rather than nothing, and `dateTime` carries the machine-readable value either way.
+ *
+ * `suppressHydrationWarning` was the rejected alternative. It silences the warning without
+ * removing the difference — the text still flips after hydration, and the next genuine
+ * mismatch in this subtree would be silenced too.
+ */
+/**
+ * `false` on the server, `true` from the first client render onward.
+ *
+ * `useSyncExternalStore` with a no-op subscription is the documented way to ask "has this
+ * hydrated?" without a `setState` in an effect — the server snapshot and the client snapshot
+ * are simply different constants, so React knows the difference is intentional and there is no
+ * mismatch to warn about.
+ */
+const neverChanges = () => () => {};
+
+function useHydrated(): boolean {
+  return React.useSyncExternalStore(
+    neverChanges,
+    () => true,
+    () => false,
+  );
+}
+
+function RelativeTime({ value }: { value: Date }) {
+  const absolute = formatDate(value) ?? value.toISOString().slice(0, 10);
+  const hydrated = useHydrated();
+  const text = hydrated ? formatRelative(value) : absolute;
+
+  return (
+    <time
+      dateTime={value.toISOString()}
+      title={absolute}
+      className="font-mono text-[0.6875rem] tabular text-faint"
+    >
+      {text}
+    </time>
+  );
+}
+
 function CommentRow({
   comment,
   canDelete,
@@ -286,9 +339,7 @@ function CommentRow({
             // "just now" would be a fabricated one.
             <span className="font-mono text-[0.6875rem] tracking-wider text-faint">Posting…</span>
           ) : (
-            <time dateTime={comment.createdAt.toISOString()} className="font-mono text-[0.6875rem] tabular text-faint">
-              {formatRelative(comment.createdAt)}
-            </time>
+            <RelativeTime value={comment.createdAt} />
           )}
 
           {canDelete ? (

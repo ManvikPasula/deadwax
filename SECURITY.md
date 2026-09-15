@@ -31,9 +31,12 @@ vulnerability.
 - **Both login budgets are consumed inside `authorize`, before the compare.** *(Fixes a source
   defect: there they live only in the Server Action, so a direct POST to
   `/api/auth/callback/credentials` reaches bcrypt with no budget consumed.)*
-- **Sessions last 14 days** with a daily re-issue. These are stateless JWTs with no
-  server-side revocation list, so the token's lifetime is the exposure window for a stolen
-  cookie; the re-issue means a real user is not logged out while a stolen token still ages out.
+- **Sessions last 14 days, as a hard cap.** These are stateless JWTs with no server-side
+  revocation list, so the token's lifetime is the exposure window for a stolen cookie — and it
+  is not extended by use: a member who signs in on the 1st is signed out on the 15th however
+  often they visit. An `updateAge: 1 day` that appeared to promise a daily re-issue was inert
+  (next-auth's RSC `auth()` branch discards the refreshed `Set-Cookie`) and has been removed
+  rather than made real; see docs/DECISIONS.md §5a for why rolling sessions were rejected.
 - **Case-insensitive uniqueness is declared in the schema**, as functional unique indexes on
   `lower(username)` and `lower(email)` — not checked in a read-then-write. A unique index
   cannot lose that race; a SELECT-then-INSERT can, and when it did, one member's profile became
@@ -227,8 +230,21 @@ Documented, not overlooked.
 
 Useful as a checklist rather than as a claim about the future:
 
-- **Injection** — every query is Drizzle with bound parameters. The one `sql.raw` interpolates
-  a column name from a two-valued literal.
+- **Injection** — every query is Drizzle with bound parameters, and there are **four**
+  `sql.raw` call sites, not one. Enumerated, because "the one" was wrong and an undercount is
+  how the fifth arrives unnoticed:
+
+  | Site | Interpolates | Where the value comes from |
+  | --- | --- | --- |
+  | `lib/db/queries/ads.ts` (×3, one statement) | a **column** name | `kind === "click" ? "clicks" : "impressions"`, a two-valued literal chosen in the same function |
+  | `lib/db/queries/prune.ts:99` | a **table** name | `InteractionTable = "likes" \| "comments"` |
+  | `lib/db/queries/prune.ts:153` | a **table** name | a two-element `as const` array literal in the loop header |
+  | `lib/ingest/albums.ts:77` | a **column** name, as `excluded."…"` | `sqlExcluded(column)`, called only with literals written in that file |
+
+  None of the four can receive a request value: every argument is a literal or a closed union
+  resolved in the same module. Drizzle cannot parameterise an identifier, so `sql.raw` is the
+  only way to write these at all — the guarantee is the call sites' argument types, which is
+  why they are listed rather than counted.
 - **XSS** — no `dangerouslySetInnerHTML`, no markdown renderer. All member text renders as
   escaped JSX children.
 - **Secrets** — no credential in the git history (gitleaks runs over full history in CI). The

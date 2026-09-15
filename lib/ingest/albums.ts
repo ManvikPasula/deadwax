@@ -3,7 +3,7 @@ import "server-only";
 import { cache } from "react";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
-import { isActiveArtist, isCanonicalRelease } from "@/lib/canonical";
+import { albumIdentities, isActiveArtist, isCanonicalRelease } from "@/lib/canonical";
 import { db } from "@/lib/db";
 import { type Album, type Artist, albums, artistSimilar, artists, credits, tracks } from "@/lib/db/schema";
 import { ProviderError } from "@/lib/providers/errors";
@@ -72,8 +72,43 @@ function isStale(syncedAt: Date | null | undefined, ttlMs: number): boolean {
   return Date.now() - syncedAt.getTime() > ttlMs;
 }
 
-/** `excluded."column"` for an upsert `set` clause. The column name is always a literal here. */
-function sqlExcluded(column: string) {
+/**
+ * `excluded."column"` for an upsert `set` clause.
+ *
+ * THE PARAMETER IS A UNION, NOT `string`, and that is the whole safety argument. `sql.raw`
+ * interpolates without binding — it has to, because Drizzle cannot parameterise an identifier —
+ * so "the column name is always a literal here" was a promise held by nothing but the current
+ * call sites. Typed as a closed union it is a promise the compiler keeps: a new caller passing
+ * anything that is not one of these names, including a value derived from a request, does not
+ * compile.
+ *
+ * The list is every column any upsert in this file sets. Adding one is a deliberate two-line
+ * edit rather than an accident.
+ */
+type MirrorColumn =
+  | "album_count"
+  | "artist_id"
+  | "artist_name"
+  | "cover_path"
+  | "deezer_id"
+  | "duration_ms"
+  | "explicit"
+  | "fans"
+  | "genres"
+  | "isrc"
+  | "label"
+  | "name"
+  | "picture_path"
+  | "popularity"
+  | "preview_url"
+  | "record_type"
+  | "release_date"
+  | "slug"
+  | "synced_at"
+  | "title"
+  | "upc";
+
+function sqlExcluded(column: MirrorColumn) {
   return sql.raw(`excluded."${column}"`);
 }
 
@@ -281,7 +316,31 @@ async function ensureAlbumUncached(deezerId: string): Promise<Album | null> {
     if (creditRows.length > 0) await db.insert(credits).values(creditRows).onConflictDoNothing();
 
     // 7. Derived columns, one statement.
-    await recomputeAlbumDerived(album.id, positionsAreReal);
+    /*
+     * THE STAMP REQUIRES A COMPLETE TRACKLIST, NOT MERELY A SUCCESSFUL REQUEST.
+     *
+     * `positionsAreReal` only goes false when `getAlbumTracks` THROWS. A call that succeeds and
+     * returns a short array — a provider hiccup, a paginated response that stopped early, a
+     * region-restricted album whose tracks are withheld — left it true, and
+     * `recomputeAlbumDerived` then wrote `tracks_synced_at = now()` beside a `track_count`,
+     * `duration_ms` and `mean_track_ms` computed over whatever happened to land. That wrong
+     * count is authoritative for the 30-day TTL: the album page prints "9 tracks" for a
+     * thirteen-track record, the discography heatmap draws nine cells, and `getCompletion`
+     * marks the member complete four tracks early.
+     *
+     * Deezer tells us how many to expect, so completeness is checkable rather than assumable.
+     * Leaving `tracks_synced_at` NULL is already the documented "retry on the next view"
+     * signal — this just uses it for the case where the endpoint lied instead of failing.
+     */
+    const expected = detail.nb_tracks ?? 0;
+    const complete = positionsAreReal && rows.length > 0 && (expected === 0 || rows.length >= expected);
+    if (!complete && positionsAreReal) {
+      console.warn(
+        `[ingest] album ${album.id}: tracklist returned ${rows.length} of ${expected} tracks — ` +
+          "leaving tracks_synced_at NULL so the next view retries",
+      );
+    }
+    await recomputeAlbumDerived(album.id, complete);
 
     // 8. MusicBrainz enrichment — optional, and its failure never fails the caller.
     await enrichAlbumFromMusicBrainz(album.id);
@@ -498,11 +557,114 @@ export async function enrichArtistFromMusicBrainz(artist: Artist): Promise<void>
  *  3. IT IS CAPPED, AND IT SAYS WHAT IT DROPPED. A silent cap reads as "covered everything"
  *     when it did not.
  */
+/**
+ * Demote every canonical row that duplicates another canonical row of the same record.
+ *
+ * ---------------------------------------------------------------------------------------
+ * WHY `is_canonical` COULD NOT KEEP ITS OWN PROMISE
+ * ---------------------------------------------------------------------------------------
+ *
+ * `is_canonical` is documented as the guard that stops "a deluxe edition sitting beside the
+ * album it duplicates with the same nine cells twice", and the completion denominator, the
+ * discography grid, the release list and the hero's release count all read it that way. It
+ * could not deliver that, for a reason that is obvious once stated: `isCanonicalRelease` is a
+ * PER-ROW predicate. It answers "is this a studio album?" by looking at one title. Nothing
+ * asked "is this the same studio album as the row next to it?", and nothing could, because that
+ * is a question about a SET.
+ *
+ * Measured on the live catalogue before this function existed: twelve artist-title groups held
+ * two canonical rows each, and four pairs shared one MusicBrainz release-group mbid outright.
+ * Kendrick Lamar showed ten canonical rows for six records, so the hero read "10 releases", the
+ * grid drew `good kid, m.A.A.d city` three times with a 16-cell deluxe row beside the 13-cell
+ * original, and `getCompletion` summed 148 tracks instead of 83 — meaning a member who had
+ * genuinely played every Kendrick record could never reach 100%, because a log is addressed by
+ * `(album_id, disc, track)` and would have had to be written three times against three
+ * different album rows.
+ *
+ * ---------------------------------------------------------------------------------------
+ * GROUPED IN JAVASCRIPT, ON PURPOSE
+ * ---------------------------------------------------------------------------------------
+ *
+ * The grouping calls `albumIdentities()` — the same function the recommender excludes by — so
+ * there is exactly ONE definition of "the same record" in the codebase. Doing it in SQL would
+ * mean re-implementing `normalise` and `stripSuffixes` as a `regexp_replace` chain, and two
+ * definitions of sameness that drift apart is precisely the defect class this repository keeps
+ * finding. The cost is one extra round trip per discography fill, which already costs a
+ * provider walk.
+ *
+ * A row matches a group if ANY of its identity forms matches, which is what lets the
+ * mbid-bearing row and the mbid-less row of one record land in the same group.
+ *
+ * THE REPRESENTATIVE IS THE ROW WITH AN MBID, then the one with more fans, then the lower id.
+ * An mbid means MusicBrainz has been consulted about it, which is the strongest claim any row
+ * carries; fans breaks the tie toward the edition people actually play; the id makes the whole
+ * thing deterministic, so re-running changes nothing.
+ *
+ * DEMOTED, NEVER DELETED. A member may have rated the deluxe edition, and that rating is a real
+ * opinion about a real thing they played. `is_canonical = false` keeps the row, keeps the log,
+ * keeps it loggable and keeps it visible on `/artist/[slug]/albums` — it only stops it entering
+ * a denominator or drawing a second grid row. Deleting it would destroy data to fix a count.
+ */
+export async function collapseDuplicateEditions(artistId: number): Promise<number> {
+  const rows = await db
+    .select({
+      id: albums.id,
+      mbid: albums.mbid,
+      title: albums.title,
+      fans: albums.fans,
+    })
+    .from(albums)
+    .where(and(eq(albums.artistId, artistId), eq(albums.isCanonical, true)));
+
+  if (rows.length < 2) return 0;
+
+  /** identity form -> the group's index in `groups`. */
+  const groupOf = new Map<string, number>();
+  const groups: Array<typeof rows> = [];
+
+  for (const row of rows) {
+    const forms = albumIdentities({ mbid: row.mbid, title: row.title, artistId });
+    const existing = forms.map((form) => groupOf.get(form)).find((index) => index !== undefined);
+    const index = existing ?? groups.push([]) - 1;
+    groups[index]!.push(row);
+    // Every form points at the group, so a later row matching EITHER form joins it.
+    for (const form of forms) groupOf.set(form, index);
+  }
+
+  const doomed: number[] = [];
+  for (const group of groups) {
+    if (group.length < 2) continue;
+    const ranked = [...group].sort(
+      (left, right) =>
+        Number(Boolean(right.mbid)) - Number(Boolean(left.mbid)) ||
+        right.fans - left.fans ||
+        left.id - right.id,
+    );
+    for (const row of ranked.slice(1)) doomed.push(row.id);
+  }
+
+  if (doomed.length === 0) return 0;
+
+  await db
+    .update(albums)
+    .set({ isCanonical: false })
+    .where(inArray(albums.id, doomed));
+
+  console.info(
+    `[ingest] artist ${artistId}: demoted ${doomed.length} duplicate edition(s) out of ${rows.length} canonical rows`,
+  );
+  return doomed.length;
+}
+
 export async function ensureDiscography(artist: Artist): Promise<void> {
   const summaries = await getArtistAlbums(artist.deezerId);
   if (summaries.length === 0) return;
 
   await cacheAlbumSummaries(summaries, artist.id);
+
+  // BEFORE anything reads `is_canonical` as "one row per record" — which the heatmap, the
+  // release list, the completion denominator and `getMirroredAlbumCounts` all do.
+  await collapseDuplicateEditions(artist.id);
 
   // Refresh `is_active`, which is the only thing choosing between the two artist TTLs.
   const latest = summaries

@@ -36,7 +36,7 @@ import "server-only";
 
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 
-import { albumIdentity } from "@/lib/canonical";
+import { albumIdentities } from "@/lib/canonical";
 import { db } from "@/lib/db";
 import { getAlbumsByIds, getRatedAlbumsForTaste, type AlbumRow } from "@/lib/db/queries/albums";
 import { albums, artistSimilar, artists } from "@/lib/db/schema";
@@ -509,7 +509,7 @@ type Exclusions = { ids: Set<number>; identities: Set<string> };
  * 2CD / Japanese pressing WITH DIFFERENT TITLES AND DIFFERENT YEARS. Excluding by id only,
  * *the list fills with remasters of records the listener already rated.*
  *
- * `albumIdentity` prefers the MusicBrainz release-group mbid and falls back to normalised
+ * `albumIdentities` emits BOTH the MusicBrainz release-group form and the normalised
  * artist plus suffix-stripped title. It deliberately does not include the year, because the
  * year is exactly what a reissue changes.
  */
@@ -539,7 +539,12 @@ async function loadExclusions(userId: number): Promise<Exclusions> {
   const identities = new Set<string>();
   for (const row of result.rows) {
     ids.add(row.id);
-    identities.add(albumIdentity({ mbid: row.mbid, title: row.title, artistName: row.artist_name }));
+    // BOTH forms, not the preferred one. See `albumIdentities`: the preferred key depends on
+    // whether this row's mbid happens to have been fetched yet, so storing only it lets the
+    // same record slip through as a candidate under the other scheme.
+    for (const identity of albumIdentities({ mbid: row.mbid, title: row.title, artistName: row.artist_name })) {
+      identities.add(identity);
+    }
   }
   return { ids, identities };
 }
@@ -964,16 +969,22 @@ function rank(scored: Scored[]): Scored[] {
 }
 
 /**
- * Dedupe by `albumIdentity`, keeping the FIRST occurrence — which, because this runs after the
- * rank, is the highest-scoring edition of the record.
+ * Dedupe by identity, keeping the FIRST occurrence — which, because this runs after the rank,
+ * is the highest-scoring edition of the record.
+ *
+ * EVERY form of the kept row's identity is recorded, not just its preferred one, and a
+ * candidate is dropped if ANY of its forms has been seen. Otherwise the deluxe edition with an
+ * mbid and the plain edition without one are two different keys, and both survive a function
+ * whose entire job is to stop that happening. Measured: the catalogue currently holds twelve
+ * artist-title groups with two canonical rows each, four of which share one release-group mbid.
  */
 function dedupeByIdentity(scored: Scored[]): Scored[] {
   const seen = new Set<string>();
   const kept: Scored[] = [];
   for (const entry of scored) {
-    const identity = albumIdentity(entry.candidate);
-    if (seen.has(identity)) continue;
-    seen.add(identity);
+    const forms = albumIdentities(entry.candidate);
+    if (forms.some((identity) => seen.has(identity))) continue;
+    for (const identity of forms) seen.add(identity);
     kept.push(entry);
   }
   return kept;
@@ -1098,7 +1109,7 @@ export async function getRecommendations(userId: number, limit = 12): Promise<Re
     if (exclusions.ids.has(row.id)) continue;
     // Identity exclusion, not just id exclusion — or the list fills with remasters of records
     // the listener already rated.
-    if (exclusions.identities.has(albumIdentity(row))) continue;
+    if (albumIdentities(row).some((identity) => exclusions.identities.has(identity))) continue;
     candidates.push({ ...row, neighbourOf: entry.neighbourOf });
   }
 
@@ -1134,6 +1145,17 @@ export async function getRecommendations(userId: number, limit = 12): Promise<Re
       // `is_canonical` and a summary only had the title regex to go on — so the hard filters are
       // re-applied rather than trusted from the first pass.
       if (!passesHardFilters(row)) return null;
+      /*
+       * AND THE EXCLUSIONS ARE RE-APPLIED, for the reason the hard filters are.
+       *
+       * `ensureAlbum` can DISCOVER an mbid that the summary did not have — and the mbid is
+       * exactly what reveals a candidate as the same record as something already rated. A
+       * candidate that was genuinely un-excludable on the first pass (title form only, no
+       * match) can become excludable here, and checking only `passesHardFilters` would let it
+       * through after the one lookup that could have caught it.
+       */
+      if (albumIdentities(row).some((identity) => exclusions.identities.has(identity))) return null;
+      if (exclusions.ids.has(row.id)) return null;
       const candidate: CandidateAlbum = { ...row, neighbourOf: entry.candidate.neighbourOf };
       const prediction = predictAlbumRating(profile, candidate);
       return { candidate, prediction, score: rankingScore(profile, prediction) };

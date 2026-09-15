@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { albumIdentity, isActiveArtist, isCanonicalRelease, stripSuffixes } from "@/lib/canonical";
+import { albumIdentities,
+  albumIdentity, isActiveArtist, isCanonicalRelease, stripSuffixes } from "@/lib/canonical";
 
 /**
  * The "specials" exclusion. Television's non-canonical items are season 0, detectable with
@@ -205,5 +206,56 @@ describe("isActiveArtist — the in_production analogue", () => {
     expect(isActiveArtist(null, now)).toBe(false);
     expect(isActiveArtist(undefined, now)).toBe(false);
     expect(isActiveArtist("not a date", now)).toBe(false);
+  });
+});
+
+describe("albumIdentities — the asymmetry that recommended records people had already rated", () => {
+  /**
+   * THE BUG THIS PINS, because it is invisible from either function alone.
+   *
+   * `albumIdentity` returns ONE key and prefers the mbid, which is right for a Map. It is wrong
+   * for MATCHING two rows, because the preferred key is not a property of the record — it is a
+   * property of how much we happen to know about the row. The same album with its mbid fetched
+   * and without it produced two keys that could never compare equal.
+   *
+   * Measured consequence before the fix: six members had rated album 55 (`good kid, m.A.A.d
+   * city`, mbid NULL) and not album 176 (the same record, mbid set), and /for-you offered 176
+   * to all six, with a predicted star figure and a reason.
+   */
+  const withMbid = { mbid: "499c19c8-0dab-4824-884b-6191d145e95b", title: "good kid, m.A.A.d city", artistName: "Kendrick Lamar" };
+  const withoutMbid = { mbid: null, title: "good kid, m.A.A.d city", artistName: "Kendrick Lamar" };
+
+  it("EMITS A FORM THAT MATCHES ACROSS THE MBID BOUNDARY", () => {
+    const known = albumIdentities(withMbid);
+    const unknown = albumIdentities(withoutMbid);
+    expect(known.some((identity) => unknown.includes(identity))).toBe(true);
+  });
+
+  it("still leads with the mbid, so the strongest claim remains the primary key", () => {
+    expect(albumIdentities(withMbid)[0]).toBe("mb:499c19c8-0dab-4824-884b-6191d145e95b");
+    expect(albumIdentity(withMbid)).toBe("mb:499c19c8-0dab-4824-884b-6191d145e95b");
+  });
+
+  it("emits exactly one form when there is no mbid, and it is the title form", () => {
+    expect(albumIdentities(withoutMbid)).toEqual(["t:kendricklamar::goodkidmaadcity"]);
+  });
+
+  it("matches a reissue against the original across BOTH directions", () => {
+    // The suffix is what `stripSuffixes` exists for, and the year is deliberately not in the key.
+    const remaster = albumIdentities({ mbid: null, title: "good kid, m.A.A.d city (Deluxe)", artistName: "Kendrick Lamar" });
+    expect(remaster.some((identity) => albumIdentities(withMbid).includes(identity))).toBe(true);
+    expect(albumIdentities(withMbid).some((identity) => remaster.includes(identity))).toBe(true);
+  });
+
+  it("does NOT collapse two different records by the same artist", () => {
+    // The accepted cost of the title form is a collision; this is the guard that it is rare.
+    const other = albumIdentities({ mbid: null, title: "To Pimp a Butterfly", artistName: "Kendrick Lamar" });
+    expect(other.some((identity) => albumIdentities(withoutMbid).includes(identity))).toBe(false);
+  });
+
+  it("falls back to the artist id when the name is absent, so two artists never merge", () => {
+    const one = albumIdentities({ mbid: null, title: "Untitled", artistId: 7 });
+    const two = albumIdentities({ mbid: null, title: "Untitled", artistId: 8 });
+    expect(one.some((identity) => two.includes(identity))).toBe(false);
   });
 });

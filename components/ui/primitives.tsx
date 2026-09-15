@@ -192,14 +192,20 @@ export function EmptyState({
   action,
   className,
 }: {
-  title: React.ReactNode;
+  /**
+   * OPTIONAL, and the reason is worth a sentence: an empty state that already sits directly
+   * under a page heading saying the same thing prints the identical sentence twice in the same
+   * display serif, separated only by the card's border. `/for-you`'s withheld arm did exactly
+   * that. Omit it there; pass it everywhere the card is the only thing speaking.
+   */
+  title?: React.ReactNode;
   description?: React.ReactNode;
   action?: React.ReactNode;
   className?: string;
 }) {
   return (
     <div className={cn("card px-6 py-12 text-center", className)}>
-      <p className="font-display text-2xl text-paper">{title}</p>
+      {title ? <p className="font-display text-2xl text-paper">{title}</p> : null}
       {description ? (
         <p className="mx-auto mt-2 max-w-prose text-sm leading-relaxed text-muted text-balance">{description}</p>
       ) : null}

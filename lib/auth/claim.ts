@@ -272,7 +272,17 @@ export async function mergeGuestInto(guestId: number, targetUserId: number): Pro
      * a slot and insert nothing — so a member with two free slots and one duplicate would
      * receive one crown instead of two. The `ON CONFLICT DO NOTHING` stays anyway, as the
      * guard against a concurrent crown landing between the SELECT and the INSERT.
+     *
+     * AND THE TARGET ROW IS LOCKED FIRST, for the reason spelled out in `lib/desert-island`:
+     * `ON CONFLICT DO NOTHING` catches a concurrent crown on the SAME track and nothing else,
+     * while the case that breaks the quota is a concurrent crown on a DIFFERENT track — which
+     * under READ COMMITTED lands between this count and the insert below and pushes the target
+     * past ten. The lock is on `users`, the same row `crownTrack` takes, so the two paths
+     * serialise against each other rather than each being internally consistent and jointly
+     * wrong.
      */
+    await tx.execute(sql`SELECT 1 FROM users WHERE id = ${targetUserId} FOR UPDATE`);
+
     const [held] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(desertIsland)

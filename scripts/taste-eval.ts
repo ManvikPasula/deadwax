@@ -22,8 +22,28 @@
  *     which is a RETRIEVAL failure wearing a ranking failure's clothes. After the retrieval
  *     rewrite: 77 distinct across 80 slots.
  *
- * The personas are keyed by an `@taste.test` email domain so they are trivially separable from
- * the demo community, and creating them is idempotent.
+ * THIS SCRIPT WRITES. It is not a reporting tool that happens to read: it INSERTS ten `users`
+ * rows and a few thousand `logs` rows, because the only way to evaluate a recommender is to
+ * have something for it to recommend to. That is worth stating at the top, in capitals, for a
+ * reason discovered the hard way: an audit was asked to "run npm run taste-eval and report the
+ * output", `.env.local` held the production connection string, and ten adversarial raters
+ * landed in the live catalogue — one of them (`eval_contrarian`) rating canonised classics 3/10
+ * by design, dragging down the public consensus on the best-known records in the database.
+ *
+ * Two guards now stand between that sentence and a repeat:
+ *
+ *  1. IT REFUSES A NON-LOCAL DATABASE unless `TASTE_EVAL_ALLOW_REMOTE=1` is set, the same shape
+ *     of guard `db-local.ts` and `db-reset.ts` already carry and `security-probe.ts` carries for
+ *     its origin. The refusal names the database it declined to write to.
+ *  2. THE PERSONAS ARE CREATED `is_guest: true`. That is not cosmetic. Every public aggregate in
+ *     this application filters `u.is_guest = false` (I-12), so the guest flag is the one switch
+ *     that keeps a fixture account out of album averages, the member directory, the global feed
+ *     and the year-in-review platform mean — for free, by reusing a filter that already exists
+ *     everywhere. The taste model itself reads a member's OWN logs (`getRatedAlbumsForTaste`
+ *     takes a user id), so nothing the harness measures is affected by it.
+ *
+ * The personas are keyed by an `@taste.test` email domain so they are also separable by hand,
+ * and creating them is idempotent.
  *
  * PGlite allows exactly one writer: stop the dev server first.
  *   npm run taste-eval
@@ -247,6 +267,10 @@ async function ensurePersonas(catalogue: CatalogueRow[]): Promise<Map<string, nu
           displayName: persona.username,
           bio: persona.note,
           emailVerifiedAt: new Date(),
+          // THE FIXTURE FLAG. See the module docblock: every public aggregate filters
+          // `u.is_guest = false`, so this one column keeps synthetic raters out of every
+          // community figure without a single new WHERE clause anywhere.
+          isGuest: true,
         })
         .onConflictDoNothing()
         .returning({ id: users.id });
@@ -332,11 +356,55 @@ async function purge(): Promise<void> {
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Refuses to write to a database that is not the local PGlite store.
+ *
+ * `--purge` is exempt: removing the personas is the repair, and a repair that refuses to run
+ * against the database that needs repairing is not a safety feature. That asymmetry is the
+ * whole point — writing fixtures to production needs an explicit opt-in, undoing them does not.
+ */
+function assertWritableTarget(): void {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    console.info("[taste-eval] driver: PGlite (local)");
+    return;
+  }
+  if (process.env.TASTE_EVAL_ALLOW_REMOTE === "1") {
+    console.warn(`[taste-eval] driver: Postgres (hosted) — writing fixtures to ${redactUrl(url)} because TASTE_EVAL_ALLOW_REMOTE=1`);
+    return;
+  }
+  console.error(
+    [
+      `[taste-eval] DATABASE_URL points at ${redactUrl(url)} and this script WRITES ten member`,
+      "  accounts plus a few thousand log rows. Refusing.",
+      "",
+      "  For the local PGlite store, comment DATABASE_URL out of .env.local.",
+      "  To evaluate against the hosted database anyway, opt in explicitly:",
+      '    PowerShell:  $env:TASTE_EVAL_ALLOW_REMOTE = "1"; npm run taste-eval',
+      "    POSIX:       TASTE_EVAL_ALLOW_REMOTE=1 npm run taste-eval",
+      "  Then undo it with: npm run taste-eval -- --purge",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+
+/** Host and database only. A connection string in a terminal is a password in a scrollback. */
+function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return "an unparseable DATABASE_URL";
+  }
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes("--purge")) {
     await purge();
     process.exit(0);
   }
+
+  assertWritableTarget();
 
   const catalogue = await loadCatalogue();
   if (catalogue.length < 10) {

@@ -255,7 +255,7 @@ Both follow the brief §4.2 order exactly:
 3. **Headers + caching.** Deezer needs none. MusicBrainz requires a descriptive
    `User-Agent` (`Deadwax/<version> ( <site url> )`) and `Accept: application/json`, and is
    additionally routed through a **serialising queue** that spaces requests ≥1100 ms
-   (`lib/providers/musicbrainz/queue.ts`). Both attach `next: { revalidate, tags }`.
+   (the `enqueue` chain in `lib/providers/musicbrainz/index.ts`). Both attach `next: { revalidate, tags }`.
 4. **Errors.** Non-2xx throws `ProviderError(status, path, message)`, body truncated to
    **200 characters** so an HTML error page cannot flood the log. **Deezer signals errors
    inside a 200 body** (`{"error":{"type":"DataException","message":"no data"}}`) — so the
@@ -1502,9 +1502,13 @@ NextAuth({
 });
 ```
 
-**14 days, not 30** — these are stateless JWTs with no server-side revocation list, so the
-token's lifetime is the exposure window for a stolen cookie; `updateAge` re-issues an active
-session daily so a real user is not logged out while a stolen token still ages out.
+**14 days, not 30, and a HARD cap** — these are stateless JWTs with no server-side revocation
+list, so the token's lifetime is the exposure window for a stolen cookie. It is **not** extended
+by use. An `updateAge: 1 day` sat here promising a daily re-issue and could never have delivered
+one: next-auth 5's RSC `auth()` branch discards the refreshed `Set-Cookie`, only its API-routes
+branch forwards it, and `await auth()` from `currentUser()` is this application's only call site
+(`proxy.ts` never calls `auth()` by I-34, and there is no `SessionProvider`). The setting is
+gone; see docs/DECISIONS.md §5a.
 
 The JWT carries id, username, `avatarSeed`, `isGuest`. The `isGuest` field carries an inline
 comment: **"Presentation only. Anything that enforces the distinction reads the column."**
@@ -2465,12 +2469,12 @@ config (`export const revalidate = 0`).
 | `typecheck` | `tsc --noEmit` |
 | `test` | `vitest run` |
 | `db:generate` / `db:migrate` / `db:studio` / `db:deploy` | drizzle-kit + the deploy runner |
-| `db:local` | `tsx --env-file=.env.local --conditions=react-server scripts/db-local.ts` |
+| `db:local` | `tsx --env-file-if-exists=.env.local --conditions=react-server scripts/db-local.ts` |
 | `db:reset` | **honours `PGLITE_DATA_DIR`** (the original hardcodes the path) |
 | `seed` / `smoke` / `taste-eval` / `security:probe` / `admin:grant` | same `tsx --env-file --conditions=react-server` prefix |
 | `security:audit` | `npm audit --omit=dev --audit-level=high` |
 
-**Two flags matter.** `--env-file=.env.local` loads real env without dotenv in the script.
+**Two flags matter.** `--env-file-if-exists=.env.local` loads real env without dotenv in the script.
 **`--conditions=react-server` is what makes the `server-only` package resolve to its no-op
 export instead of throwing**, so a plain Node script can import the query layer — the CLI
 equivalent of `resolve.conditions` in the Vitest config.
@@ -2496,7 +2500,7 @@ equivalent of `resolve.conditions` in the Vitest config.
 
 ### 13.3 Tests
 
-**Two kinds.** Pure suites (`ratings`, `mappers`, `slug`, `bounds`, `listen`, `ads-plan`,
+**Two kinds.** Pure suites (`ratings`, `mappers`, `slug`, `bounds`, `listen`, `ads`,
 `canonical`) import only pure modules and touch nothing. Integration suites (`security`,
 `guest`, `ads`, `desert-island`, `password-reset`, `taste`, `aggregates`, `no-escalation`) each
 create **their own throwaway Postgres**:

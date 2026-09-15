@@ -118,7 +118,8 @@ export type HeatSource = "member" | "critic" | "mine" | "predicted";
  */
 const SOURCES: ReadonlyArray<{ key: HeatSource; label: string; unavailable: string }> = [
   { key: "member", label: "Members", unavailable: "No member ratings for this artist yet" },
-  { key: "critic", label: "Critics", unavailable: "No critic scores for this release" },
+  // This component is only ever mounted on an artist page, so the wording is artist-scoped.
+  { key: "critic", label: "Critics", unavailable: "No critic scores for this artist yet" },
   { key: "mine", label: "Mine", unavailable: "Rate a track to see your own colours" },
   /*
    * "eight" IS `MIN_RATED_ALBUMS` FROM lib/taste/shared.ts, SPELLED OUT. If that constant

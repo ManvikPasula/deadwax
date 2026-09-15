@@ -27,10 +27,27 @@ import { signInSchema } from "@/lib/security/schemas";
  *
  * FOURTEEN DAYS, NOT THIRTY. These are stateless JWTs with no server-side revocation list, so
  * the token's lifetime IS the exposure window for a stolen cookie — there is nothing to delete
- * when a member says "sign me out everywhere". `updateAge: 1 day` re-issues an active session
- * daily, so somebody who uses the site is never logged out while a stolen token still ages
- * out. The pair is the whole trade: shorten `maxAge` to shrink the window, keep `updateAge`
- * short enough that real use refreshes it.
+ * when a member says "sign me out everywhere".
+ *
+ * **THE FOURTEEN DAYS ARE A HARD CAP. SESSIONS ARE NOT RE-ISSUED.** This block used to carry
+ * an `updateAge: 1 day` and a paragraph explaining that daily re-issue meant "somebody who uses
+ * the site is never logged out while a stolen token still ages out". That paragraph described
+ * behaviour this application does not have, and the configuration achieving it was inert:
+ *
+ *   `updateAge` only takes effect if something writes the refreshed `Set-Cookie` back to the
+ *   browser. In next-auth 5's RSC branch, `auth()` called with no arguments resolves the
+ *   session and DISCARDS the `Set-Cookie` headers the session action produced — only the API
+ *   Routes branch forwards them. `await auth()` from `currentUser()` is the only call site in
+ *   this repository; `proxy.ts` deliberately never calls `auth()` (I-34), there is no
+ *   `SessionProvider`, and nothing client-side fetches `/api/auth/session`. So no code path
+ *   could re-issue the cookie, and the JWT's `exp` was fixed at sign-in + 14 days regardless.
+ *
+ * The inert setting is gone rather than made real, and the reason is the second-order effect:
+ * making re-issue work means adding a `proxy.ts` that calls `auth()` — which contradicts I-34 —
+ * and rolling sessions indefinitely would then make `GUEST_GRACE_DAYS` in
+ * `lib/db/queries/prune.ts` start deleting the diary of a guest who visited yesterday, which is
+ * the exact outcome that constant was written to prevent. A hard cap is the smaller, more
+ * honest guarantee: fourteen days from sign-in, for everybody, always.
  *
  * The single revocation point is `requireUser()` in lib/auth/session.ts, which re-reads the
  * row on every mutation (I-17). Deleting the row stops writes on the next request; the cookie
@@ -55,8 +72,6 @@ const DUMMY_HASH = "$2b$12$/ffpupMJN.AK3hWA0JH0KelffEADXmA60QPUDO/BZVut7xFj0R8Vy
 
 /** 14 days. See the docblock — this number is an exposure window, not a convenience setting. */
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 14;
-/** 1 day. Re-issues an active session so real use never collides with the 14-day cap. */
-const SESSION_UPDATE_AGE_SECONDS = 60 * 60 * 24;
 
 /**
  * The account fields `authorize` needs, and nothing else.
@@ -141,7 +156,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: {
     strategy: "jwt",
     maxAge: SESSION_MAX_AGE_SECONDS,
-    updateAge: SESSION_UPDATE_AGE_SECONDS,
+    // NO `updateAge`. See the module docblock: it cannot work through the RSC `auth()` branch,
+    // so it was configuration describing a behaviour that did not exist.
+
   },
   pages: { signIn: "/login" },
   /**

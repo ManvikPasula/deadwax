@@ -54,6 +54,7 @@ import { Tracklist } from "@/components/album/tracklist";
 import { CreditsRail } from "@/components/artist/credits-rail";
 import { AddToListDialog } from "@/components/list/add-to-list-dialog";
 import { Consensus } from "@/components/rating/consensus";
+import { DualRating } from "@/components/rating/dual-rating";
 import { Histogram } from "@/components/rating/histogram";
 import { ReviewCard } from "@/components/social/review-card";
 import { Button } from "@/components/ui/button";
@@ -67,6 +68,7 @@ import {
   getRatingStats,
   getTrackStrip,
   getViewerAlbumState,
+  type ViewerAlbumState,
 } from "@/lib/db/queries/albums";
 import { getMirroredAlbumCounts } from "@/lib/db/queries/artists";
 import { getListOptions } from "@/lib/db/queries/lists";
@@ -74,6 +76,7 @@ import { countReviews, getLikedLogIds, getReviews } from "@/lib/db/queries/logs"
 import { isWanted } from "@/lib/db/queries/users";
 import { countHeld, DESERT_ISLAND_QUOTA } from "@/lib/desert-island";
 import { plural } from "@/lib/format";
+import { dualRating } from "@/lib/ratings/dual";
 import { ensureAlbumById } from "@/lib/ingest/albums";
 import { albumCover } from "@/lib/providers/images";
 import { albumSlug, parseAlbumSlug } from "@/lib/slug";
@@ -357,6 +360,22 @@ export default async function AlbumPage({ params }: { params: Params }) {
           ) : null}
 
           {/*
+            THE ALBUM-SCOPE DUAL RATING — the verdict on the record beside the mean of the
+            tracks the member rated on it.
+
+            This is the second of the two scopes the feature was specified at, and it was
+            missing: `DualRating` was mounted in exactly one place, the artist page, with
+            `scope="artist"`, so half of a documented "applies twice" feature was unreachable
+            while the album page already held both of its inputs in hand.
+
+            VIEWER-PRIVATE, so no vote count and no attribution: there is only one person in it.
+            Rendered only when there is something to compare — the panel's own gate is that a
+            null whole rating AND a null part average means nothing to say, and two em dashes in
+            a card is noise on a page that already shows the member's rating in the hero.
+          */}
+          {viewer ? <AlbumDualRatingSlot state={viewerState} /> : null}
+
+          {/*
             LISTEN LINKS ARE SEARCHES, NOT DEEP LINKS, on every service but Deezer — and the
             mirror holds no Deezer permalink column, so even Deezer is a search here. The
             component labels which is which; this page does not have a better URL to give it.
@@ -372,5 +391,35 @@ export default async function AlbumPage({ params }: { params: Params }) {
         </aside>
       </div>
     </div>
+  );
+}
+
+/**
+ * The album-scope dual rating, or nothing.
+ *
+ * A separate component for the same reason the artist page has one: the "is there anything to
+ * compare" question is `dualRating`'s to answer, and putting the call plus the null check inline
+ * in the page body would put two more branches in a function that already has fourteen.
+ *
+ * THE PARTS ARE THE MEMBER'S OWN TRACK RATINGS on this record, not the community's — the whole
+ * panel is one person's opinion of a whole against their opinion of its parts, and mixing the
+ * two sides would compare a member's verdict against everybody else's average and call the
+ * difference a divergence.
+ */
+function AlbumDualRatingSlot({ state }: { state: ViewerAlbumState | null }) {
+  if (!state) return null;
+
+  const dual = dualRating(
+    state.albumLog?.rating ?? null,
+    [...state.trackLogs.values()].map((log) => log.rating),
+  );
+  if (dual.wholeRating === null && dual.partAverage === null) return null;
+
+  return (
+    <section className="card p-4">
+      {/* `scope="album"` is the default, and it is passed explicitly so the two call sites read
+          the same way and neither depends on the default staying what it is. */}
+      <DualRating dual={dual} scope="album" />
+    </section>
   );
 }

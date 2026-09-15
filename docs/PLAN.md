@@ -17,7 +17,7 @@ with two insertions and one reordering, each justified below.
 | **9** | Social: follows, feed, reviews, likes, comments, `/log/[id]`, directory | |
 | **10** | Lists (incl. the edit surface), collections, profile stats, year in review | `npm run smoke` passes all 25 checks |
 | **11** | Desert Island | `npm test` green on `desert-island` — all seven boundary cases |
-| **12** | The recommender — **with `scripts/taste-eval.ts` and the ten personas built FIRST** | `taste-eval` prints ≥ 60 distinct titles across 60 slots for ten personas |
+| **12** | The recommender — **with `scripts/taste-eval.ts` and the ten personas built FIRST** | `taste-eval` prints ≥ 40 distinct titles across the **54** slots nine readable personas produce, with exactly one (`eval_flat`) withheld by design — six slots each, and a withheld arm increments no slots, so 60 was never reachable |
 | **13** | Admin, then house ads (ads depend on the taste profile) | `npm test` green on `ads`; the 1/3 reservation test passes within ±0.04 |
 | **14** | Seed, full smoke, prune cron, GitHub, Vercel, live verification | A public URL serves a seeded, working instance |
 

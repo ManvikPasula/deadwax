@@ -189,7 +189,22 @@ export function DesertIslandStrip({
               */}
               {entry.rating === null ? null : (
                 <p className="mt-1">
-                  <Stars value={entry.rating} size="xs" label={`Your rating: ${formatRating(entry.rating)} out of 5 stars`} />
+                  {/*
+                    THE LABEL FOLLOWS OWNERSHIP. `isOwner` was already in scope, driving the
+                    dashed empty slots and the "n of ten held" line, but not this string — so a
+                    visitor's screen reader was told the profile owner's five-star ratings were
+                    their own. `app/[username]/albums/page.tsx` already switches its label this
+                    way; this component simply did not.
+                  */}
+                  <Stars
+                    value={entry.rating}
+                    size="xs"
+                    label={
+                      isOwner
+                        ? `Your rating: ${formatRating(entry.rating)} out of 5 stars`
+                        : `Rated ${formatRating(entry.rating)} out of 5 stars`
+                    }
+                  />
                 </p>
               )}
             </li>

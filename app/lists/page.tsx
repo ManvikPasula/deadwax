@@ -105,9 +105,16 @@ export default async function ListsPage({
       ) : null}
 
       <section>
-        <p className="mb-4 font-mono text-[0.6875rem] uppercase tracking-wider tabular text-faint">
+        {/*
+          AN `h2`, NOT A `<p>`. `ListCard` titles itself with an `h3`, so a count rendered as a
+          paragraph left the document outline reading h1 -> h3 -> h3 -> h3 with no h2 anywhere,
+          and a screen-reader user navigating by heading skipped a level into the cards. The
+          count IS the section's heading — it says what the section contains — so it is marked
+          up as one. `sr-only` is not used: it is legitimately visible text.
+        */}
+        <h2 className="mb-4 font-mono text-[0.6875rem] uppercase tracking-wider tabular text-faint">
           {plural(lists.length, "list")}
-        </p>
+        </h2>
 
         {lists.length === 0 ? (
           <EmptyState

@@ -209,8 +209,51 @@ export function albumIdentity(album: {
   title: string;
 }): string {
   if (album.mbid) return `mb:${album.mbid}`;
+  return titleIdentity(album);
+}
+
+/** The title-only form, always computable. Split out so `albumIdentities` can emit both. */
+function titleIdentity(album: {
+  artistName?: string | null;
+  artistId?: number | string | null;
+  title: string;
+}): string {
   const artist = album.artistName ? normalise(album.artistName) : `artist${album.artistId ?? ""}`;
   return `t:${artist}::${normalise(stripSuffixes(album.title))}`;
+}
+
+/**
+ * EVERY identity a row can be recognised by, not just its preferred one.
+ *
+ * `albumIdentity` returns ONE key, and preferring the mbid is right for a Map — it is the
+ * strongest claim available. But it makes the function useless for the job the recommender
+ * needs, which is *matching* two rows, because the preferred key is not a property of the
+ * record, it is a property of HOW MUCH WE HAPPEN TO KNOW about the row:
+ *
+ *   album 55  good kid, m.A.A.d city, mbid NULL      -> t:kendricklamar::goodkidmaadcity
+ *   album 176 good kid, m.A.A.d city, mbid 499c19c8  -> mb:499c19c8-...
+ *
+ * Same record, two schemes, never equal. Measured consequence before this existed: six members
+ * had rated album 55 and not 176, and /for-you offered 176 to all six — with a predicted star
+ * figure and a reason — because the exclusion set held one form and the candidate hydrated as
+ * the other. ARCHITECTURE.md section 6.7 promises the opposite ("excludes every album sharing
+ * an albumIdentity with anything already logged, or the list fills with remasters of records
+ * the listener already rated").
+ *
+ * So a *set* membership test wants BOTH forms on both sides. The title form is always emitted,
+ * even when an mbid exists, which is what lets a known row match an unknown one in either
+ * direction. Two genuinely different records colliding on the title form is possible in
+ * principle and is the accepted cost: `stripSuffixes` plus the artist name makes it rare, and
+ * the failure mode is a missing recommendation rather than a duplicate one.
+ */
+export function albumIdentities(album: {
+  mbid?: string | null;
+  artistName?: string | null;
+  artistId?: number | string | null;
+  title: string;
+}): string[] {
+  const title = titleIdentity(album);
+  return album.mbid ? [`mb:${album.mbid}`, title] : [title];
 }
 
 /**

@@ -26,10 +26,13 @@ import { pruneRateLimits } from "@/lib/security/rate-limit";
  * decoration.
  *
  * What protects them instead: `CRON_SECRET` compared in constant time, the route 404ing when
- * the secret is unset, and the fact that **nothing in this module takes a parameter.** There is
- * no id, no username and no interval to influence from a request — every filter is a constant
- * compiled into the statement, so the worst a caller who somehow reached these functions could
- * do is run the sweep that was going to run at 04:00 anyway.
+ * the secret is unset, and the fact that **every parameter is drawn from a closed union or a
+ * module constant.** Two of these functions do take one — `sweepOrphanedInteractions` takes
+ * `"likes" | "comments"` and `pruneRateLimits` takes an age with a default — so the earlier
+ * wording ("nothing in this module takes a parameter") was simply false. What is true, and is
+ * what the safety argument actually rests on, is that there is no path from a request to any of
+ * them: no id, no username, no interval a caller can influence. The worst a caller who somehow
+ * reached these functions could do is run the sweep that was going to run at 04:00 anyway.
  *
  * ---------------------------------------------------------------------------------------
  * WHY THE SWEEPS ARE INDEPENDENT STATEMENTS AND NOT ONE TRANSACTION
@@ -45,10 +48,18 @@ import { pruneRateLimits } from "@/lib/security/rate-limit";
 /**
  * A guest older than this is unreachable, so deleting them destroys nothing anybody can see.
  *
- * The session's own `maxAge` is 14 days. **21 is that plus a week of margin**, and the margin is
- * not decoration: `updateAge` re-issues an active session every day, so a guest who visits on
- * day 13 holds a cookie good until day 27. Pruning at exactly 14 days would delete the diary of
- * somebody who was using it yesterday.
+ * The session's own `maxAge` is 14 days, and it is a HARD cap — sessions are not re-issued (see
+ * `lib/auth/index.ts`, where an inert `updateAge` was removed once it turned out the RSC
+ * `auth()` branch discards the refreshed cookie). **21 is 14 plus a week of margin**, and the
+ * margin is not decoration: a guest's cookie expires exactly 14 days after it was issued, so
+ * pruning at 14 would race the last hours of a live session, and a week's slack costs nothing
+ * but a few unreachable rows.
+ *
+ * This derivation used to read "updateAge re-issues an active session every day, so a guest who
+ * visits on day 13 holds a cookie good until day 27" — which argued for a number larger than
+ * the constant beneath it, from a mechanism that did not exist. If re-issue is ever made real,
+ * THIS SWEEP MUST CHANGE FIRST: with rolling sessions, age since `created_at` would delete the
+ * diary of a guest who visited yesterday.
  *
  * A constant here rather than an environment variable because it is coupled to
  * `SESSION_MAX_AGE_SECONDS` in `lib/auth/index.ts` — two values that must move together do not

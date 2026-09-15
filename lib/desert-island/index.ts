@@ -209,7 +209,7 @@ export async function crownTrack(userId: number, target: CrownTarget): Promise<D
   // answer to the member: the entry condition is five stars.
   if (latest[0]?.rating !== MAX_RATING) return { ok: false, reason: "not-five-star" };
 
-  /* ---- Step 2 — count, check, insert, in ONE transaction (I-29) ---------------- */
+  /* ---- Step 2 — lock, count, check, insert, in ONE transaction (I-29) ---------- */
   /**
    * THE TRANSACTION IS NOT DEFENSIVE PROGRAMMING. Two tabs both sitting at nine held would
    * otherwise each read nine, each insert, and leave the member holding eleven — which is not
@@ -218,8 +218,34 @@ export async function crownTrack(userId: number, target: CrownTarget): Promise<D
    * `desert_island_target_uq` does NOT close this. A unique index stops a duplicate row for the
    * SAME track; it says nothing at all about two different tracks, which is the case that
    * breaks the quota.
+   *
+   * ---------------------------------------------------------------------------------------
+   * AND NEITHER DID THE TRANSACTION, WHICH IS WHY THERE IS NOW A LOCK
+   * ---------------------------------------------------------------------------------------
+   *
+   * The paragraph above was wrong for as long as it stood alone, and the way it was wrong is
+   * worth keeping: **a transaction is not a mutex.** Postgres runs at READ COMMITTED by default
+   * (verified on the hosted instance: `show default_transaction_isolation` returns
+   * `read committed`), and under READ COMMITTED two concurrent transactions each run
+   * `SELECT count(*)`, each see nine, each pass the check and each insert. BEGIN/COMMIT changed
+   * nothing about the interleaving it was written to prevent.
+   *
+   * No test could have caught it either: PGlite allows exactly one writer, so the two
+   * transactions are serialised locally by construction and the race is invisible in the suite
+   * that exists to prove this rule.
+   *
+   * `SELECT 1 FROM users WHERE id = $1 FOR UPDATE` is the fix, and it is the cheap one. It
+   * serialises all of THIS member's crown attempts against each other and nothing else — two
+   * different members crowning at the same instant take two different row locks and never
+   * wait. The rejected alternative was `{ isolationLevel: "serializable" }`, which would need a
+   * retry loop around a 40001 serialisation failure, in an action whose caller is a button.
+   *
+   * The lock is taken FIRST, before the count, because a lock taken after the read it is meant
+   * to protect is decoration.
    */
   return db.transaction<DesertIslandResult>(async (tx) => {
+    await tx.execute(sql`SELECT 1 FROM users WHERE id = ${userId} FOR UPDATE`);
+
     const held = await countHeldWith(tx, userId);
 
     const already = await tx
