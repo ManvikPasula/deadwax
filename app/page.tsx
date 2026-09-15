@@ -55,6 +55,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { AdSlot } from "@/components/ads/ad-slot";
 import { HeroCycle } from "@/components/home/hero-cycle";
 import { HomeRails } from "@/components/home/home-rails";
 import { PersonalRails, PersonalRailsSkeleton } from "@/components/home/personal-rails";
@@ -62,6 +63,7 @@ import { StatTiles } from "@/components/profile/stat-tiles";
 import { ActivityFeed } from "@/components/social/activity-feed";
 import { Button } from "@/components/ui/button";
 import { EmptyState, Eyebrow, SectionHeading } from "@/components/ui/primitives";
+import { AD_PAGE_KEY, serveAds } from "@/lib/ads/serve";
 import { currentUser } from "@/lib/auth/session";
 import { browseAlbums } from "@/lib/db/queries/albums";
 import { getFollowingFeed, getGlobalFeed, getLikedLogIds, getRecentLogs } from "@/lib/db/queries/logs";
@@ -130,6 +132,22 @@ async function SignedOutHome() {
    */
   const frames = rows.map((row) => ({ coverUrl: albumCover(row, 1000) }));
 
+  /*
+   * ONE SLOT, AND IT IS KEYED `home` RATHER THAN `feed`.
+   *
+   * The two keys exist because this route renders two different pages, and per-page keying is
+   * one of the four frequency mechanisms: a visitor who signs in mid-session should not get the
+   * same unit again under a heading that has changed. `viewerId: null` — a signed-out visitor
+   * has no plan to exempt and no affinity to score with, and `serveAds` handles both by taking
+   * the nullable id rather than making the caller branch.
+   */
+  const ads = await serveAds({
+    viewerId: null,
+    pageKey: AD_PAGE_KEY.home,
+    placement: "feed",
+    slotCount: 1,
+  });
+
   return (
     <div className="space-y-14">
       {/*
@@ -172,6 +190,14 @@ async function SignedOutHome() {
         passed: a signed-out visitor has no overlay to draw.
       */}
       <HomeRails />
+
+      {/*
+        BELOW THE RAILS, NOT BETWEEN THEM. An ad inside the rail stack would sit between two
+        sections of catalogue and read as a third one — the unit is labelled, but the first
+        signal a reader takes is position. `AdSlot` renders nothing at all when handed an empty
+        plan, so a deployment with no inventory has no empty box here.
+      */}
+      <AdSlot ad={ads[0]} className="mx-auto max-w-md" />
     </div>
   );
 }
@@ -181,10 +207,20 @@ async function SignedOutHome() {
 /* -------------------------------------------------------------------------- */
 
 async function SignedInHome({ userId, username }: { userId: number; username: string }) {
-  const [stats, recent, following] = await Promise.all([
+  const [stats, recent, following, ads] = await Promise.all([
     getProfileStats(userId),
     getRecentLogs(userId, RECENT_LIMIT),
     getFollowingFeed(userId, FEED_LIMIT),
+    /*
+     * `feed` RATHER THAN `home`, and the placement is `feed` too.
+     *
+     * The page key rotates the unit when the same person's home changes shape; the placement
+     * decides which inventory is eligible, since an ad booked `sidebar` only is not a candidate
+     * for a full-width column. The Pro exemption is enforced at the point of fetch inside
+     * `serveAds`, so for a Pro member no candidate query runs at all — which is why this sits
+     * in the batch unconditionally rather than behind a plan check here.
+     */
+    serveAds({ viewerId: userId, pageKey: AD_PAGE_KEY.feed, placement: "feed", slotCount: 1 }),
   ]);
 
   /*
@@ -252,6 +288,13 @@ async function SignedInHome({ userId, username }: { userId: number; username: st
           }
         />
       </section>
+
+      {/*
+        BETWEEN THE TWO FEEDS, WHICH IS THE ONE PLACE ON THIS PAGE A UNIT IS NOT AN INTERRUPTION:
+        both neighbours are section boundaries, so the card lands in a gap rather than inside
+        somebody's diary. Renders nothing when the plan is empty or the member is on Pro.
+      */}
+      <AdSlot ad={ads[0]} className="mx-auto max-w-md" />
 
       <section>
         <SectionHeading

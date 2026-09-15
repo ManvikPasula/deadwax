@@ -46,9 +46,11 @@ import { ReplayLeaders } from "@/components/profile/replay-leaders";
 import { StatTiles } from "@/components/profile/stat-tiles";
 import { TopFour } from "@/components/profile/top-four";
 import { TopRated } from "@/components/profile/top-rated";
+import { AdSlot } from "@/components/ads/ad-slot";
 import { ActivityFeed } from "@/components/social/activity-feed";
 import { Button } from "@/components/ui/button";
 import { EmptyState, Eyebrow, Meter, SectionHeading } from "@/components/ui/primitives";
+import { AD_PAGE_KEY, serveAds } from "@/lib/ads/serve";
 import { currentUser } from "@/lib/auth/session";
 import { getTopAlbums, getTopArtists, getTopTracks } from "@/lib/db/queries/albums";
 import { getUserLists } from "@/lib/db/queries/lists";
@@ -121,6 +123,7 @@ export default async function ProfilePage({ params }: PageProps) {
     discographies,
     activity,
     lists,
+    ads,
   ] = await Promise.all([
     // Cached. See the module docblock: the layout has already paid for this one.
     getProfileStats(member.id),
@@ -140,6 +143,22 @@ export default async function ProfilePage({ params }: PageProps) {
      * disagree with itself.
      */
     getUserLists(member.id, viewer?.id),
+    /*
+     * KEYED BY THE USERNAME BEING VIEWED, not by the viewer.
+     *
+     * The viewer is already in the seed (`pageSeed` composes viewer + page + hour), so keying on
+     * the profile's owner is what makes walking five profiles show five different units instead
+     * of the same one five times. `AD_PAGE_KEY.member` exists for exactly this surface.
+     *
+     * ONE SLOT, AT THE BOTTOM. A profile is somebody's own page, and the reasonable maximum
+     * there is one unit after everything they wrote — not two, and not above their diary.
+     */
+    serveAds({
+      viewerId: viewer?.id ?? null,
+      pageKey: AD_PAGE_KEY.member(member.username),
+      placement: "feed",
+      slotCount: 1,
+    }),
   ]);
 
   /*
@@ -354,6 +373,12 @@ export default async function ProfilePage({ params }: PageProps) {
           />
         </section>
       ) : null}
+
+      {/*
+        LAST ON THE PAGE, after everything this member made. `AdSlot` renders nothing when the
+        plan is empty or the viewer is on Pro.
+      */}
+      <AdSlot ad={ads[0]} className="mx-auto w-full max-w-md" />
     </div>
   );
 }
