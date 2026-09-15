@@ -173,10 +173,37 @@ export function isCanonicalRelease(input: CanonicalInput): boolean {
  * "OK Computer - 2017 Remaster"        -> "OK Computer"
  * "Discovery [Bonus Track Version]"    -> "Discovery"
  */
+/**
+ * A trailing edition marker with NO bracket and NO dash around it.
+ *
+ * The bracketed and dash-separated forms cover most of the catalogue, and they covered none of
+ * `DAMN. COLLECTORS EDITION.` — which sat beside `DAMN.` as a second canonical row on the live
+ * artist page after every other duplicate had been collapsed. Deezer titles this way often
+ * enough to matter, and a bare trailing phrase is invisible to both other rules.
+ *
+ * THE VOCABULARY IS CLOSED, and it has to be: stripping arbitrary trailing words would merge
+ * `Untitled` with `Untitled 3` and two different records would become one. Every word here
+ * names a REPACKAGING of an existing record rather than a different record.
+ *
+ * The leading separator is required, so a record genuinely titled "Deluxe" or "Ultimate" keeps
+ * its whole name — there is nothing before the marker to keep, and the regex cannot match.
+ *
+ * The separator is WHITESPACE ONLY, not whitespace-or-punctuation: `[\s.,]+` ate the full stop
+ * in `DAMN. COLLECTORS EDITION.` and returned `DAMN`, which is a different title from `DAMN.`.
+ * Identity would not have cared (`normalise` drops punctuation anyway), but this function is
+ * public and its contract is to remove a suffix, not to edit the title it leaves behind.
+ */
+const BARE_EDITION_SUFFIX =
+  /\s+(?:the\s+)?(?:\d+(?:st|nd|rd|th)\s+)?(?:anniversary\s+)?(?:super\s+|mega\s+)?(?:deluxe|collector'?s?|special|expanded|limited|anniversary|remastered|remaster|reissue|platinum|ultimate)(?:\s+(?:edition|version|reissue|remaster))?\.?$/i;
+
 export function stripSuffixes(title: string): string {
   return title
     .replace(/\s*[([{][^)\]}]*[)\]}]\s*$/g, "")
     .replace(/\s+[-–—]\s+.*$/g, "")
+    // Applied AFTER the bracket and dash rules, so "Abbey Road (Super Deluxe)" is already
+    // reduced and this pass has nothing left to do — and "DAMN. COLLECTORS EDITION." is
+    // reduced by this pass alone.
+    .replace(BARE_EDITION_SUFFIX, "")
     .replace(/\s+/g, " ")
     .trim();
 }

@@ -259,3 +259,37 @@ describe("albumIdentities — the asymmetry that recommended records people had 
     expect(one.some((identity) => two.includes(identity))).toBe(false);
   });
 });
+
+describe("stripSuffixes — bare edition markers, with no bracket and no dash", () => {
+  /**
+   * The case that survived every other duplicate collapse on the live catalogue: `DAMN.` and
+   * `DAMN. COLLECTORS EDITION.` stayed as two canonical rows, because the bracket rule needs a
+   * bracket and the dash rule needs a dash.
+   */
+  it("strips a bare trailing edition phrase", () => {
+    expect(stripSuffixes("DAMN. COLLECTORS EDITION.")).toBe("DAMN.");
+    expect(stripSuffixes("Rumours Deluxe Edition")).toBe("Rumours");
+    expect(stripSuffixes("Nevermind 30th Anniversary")).toBe("Nevermind");
+    expect(stripSuffixes("Blue Remastered")).toBe("Blue");
+  });
+
+  it("KEEPS A TITLE THAT IS ONLY AN EDITION WORD, because there is nothing to strip", () => {
+    // The leading separator is required, so a record genuinely called "Deluxe" survives whole.
+    expect(stripSuffixes("Deluxe")).toBe("Deluxe");
+    expect(stripSuffixes("Ultimate")).toBe("Ultimate");
+  });
+
+  it("does not eat a trailing word outside the closed vocabulary", () => {
+    // The guard against merging two different records: only repackaging words are stripped.
+    expect(stripSuffixes("Untitled 3")).toBe("Untitled 3");
+    expect(stripSuffixes("Music Has The Right To Children")).toBe("Music Has The Right To Children");
+    expect(stripSuffixes("Station To Station")).toBe("Station To Station");
+    expect(stripSuffixes("Special Herbs")).toBe("Special Herbs");
+  });
+
+  it("groups the two DAMN. editions to one identity", () => {
+    const plain = albumIdentities({ mbid: null, title: "DAMN.", artistName: "Kendrick Lamar" });
+    const collectors = albumIdentities({ mbid: null, title: "DAMN. COLLECTORS EDITION.", artistName: "Kendrick Lamar" });
+    expect(collectors.some((identity) => plain.includes(identity))).toBe(true);
+  });
+});
