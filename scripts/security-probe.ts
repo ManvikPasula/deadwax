@@ -34,13 +34,33 @@ function report(name: string, ok: boolean, detail: string, severity: Severity = 
   console.info(`  ${mark.padEnd(4)}  ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
+/**
+ * EVERY REQUEST ASKS FOR HTML UNLESS THE CALLER SAYS OTHERWISE, AND THAT IS LOAD-BEARING.
+ *
+ * `proxy.ts`'s matcher carries `has: [{ type: "header", key: "accept", value: ".*text/html.*" }]`
+ * — the header policy runs on DOCUMENTS ONLY, by design, so that an RSC payload fetch and an
+ * API response do not each get a CSP they have no use for. Node's `fetch` defaults to
+ * `Accept: *\/*`, which means a probe that does not set this header measures the exact request
+ * shape the policy deliberately skips, and then reports **every** header as missing.
+ *
+ * This cost a full debugging cycle: thirteen consecutive failures that read like "the CSP was
+ * never wired up" and were in fact "the probe asked the wrong question". The Accept string is
+ * the one Chrome sends for a top-level navigation, because that is the shape whose headers are
+ * the thing under test.
+ */
+const DOCUMENT_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+
 async function probe(
   path: string,
   init?: RequestInit & { noRedirect?: boolean },
 ): Promise<{ status: number; headers: Headers; body: string }> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("accept")) headers.set("accept", DOCUMENT_ACCEPT);
+
   const response = await fetch(`${BASE}${path}`, {
     redirect: init?.noRedirect ? "manual" : "follow",
     ...init,
+    headers,
   });
   const body = await response.text().catch(() => "");
   return { status: response.status, headers: response.headers, body };
@@ -142,11 +162,35 @@ async function anonymousSection(): Promise<void> {
     );
   }
 
-  // Token-bearing and admin pages must not be indexed.
+  /*
+   * Token-bearing pages must not be indexed — OR must not still be carrying the token by the
+   * time they reach a page that is.
+   *
+   * `/reset` renders for an anonymous visitor and carries `noindex, nofollow`. `/verify` does
+   * not render at all without a session: it redirects to `/login?next=/verify`, and the token
+   * is STRIPPED on the way because `safeNextPath`'s allowlist excludes `?` and `=`. That is a
+   * stronger property than a `noindex` on the destination would be, so it is asserted directly
+   * rather than being worked around — an earlier version of this check followed the redirect,
+   * landed on the indexable sign-in page, and reported a leak that the strip had already
+   * prevented.
+   */
   for (const path of ["/reset?token=" + "a".repeat(43), "/verify?token=" + "a".repeat(43)]) {
-    const { headers, body } = await probe(path);
-    const noindex = (headers.get("x-robots-tag") ?? "").includes("noindex") || /noindex/i.test(body);
-    report(`token page is noindex: ${path.split("?")[0]}`, noindex, "");
+    const name = path.split("?")[0];
+    const unfollowed = await probe(path, { noRedirect: true });
+
+    if (unfollowed.status >= 300 && unfollowed.status < 400) {
+      const location = unfollowed.headers.get("location") ?? "";
+      report(
+        `token page keeps the token out of its redirect: ${name}`,
+        !location.includes("a".repeat(43)),
+        `-> ${location || "(no Location)"}`,
+      );
+      continue;
+    }
+
+    const noindex =
+      (unfollowed.headers.get("x-robots-tag") ?? "").includes("noindex") || /noindex/i.test(unfollowed.body);
+    report(`token page is noindex: ${name}`, noindex, "");
   }
 }
 
