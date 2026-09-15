@@ -140,37 +140,71 @@ design — Next serves overlays there and not in production.
 - [x] `git init`, GitHub repo, push — <https://github.com/ManvikPasula/deadwax>
 - [x] Vercel project created
 
-### The two steps that need account access
+### Deploying — the two things that need your account, and why neither is a guess
 
-Everything above is done and verified locally. These two cannot be completed from here, and
-both are stated plainly rather than guessed at:
+Everything above this line is built, run and verified. Deployment is genuinely blocked on two
+credentials, and both blocks were reproduced rather than assumed.
 
-1. **A hosted Postgres `DATABASE_URL`.** The app runs on PGlite locally with zero
-   configuration, but PGlite writes to the local filesystem and allows one writer, so it
-   cannot back a serverless deployment. Provisioning a database requires an interactive
-   signup (Vercel Marketplace → Neon, or Neon/Supabase directly), which is not reachable
-   from here. The free tiers are sufficient.
+**Block 1 — a hosted Postgres `DATABASE_URL`.**
 
-2. **Vercel CLI authentication.** A `vercel` CLI is installed but its stored token is
-   rejected, and `vercel login` is interactive. The Vercel MCP surface available here can
-   *create* projects but its reads return 404 for them, so it cannot verify a git link or set
-   environment variables.
+The app runs on PGlite with zero configuration, which is what makes a cold clone work. PGlite
+is a WebAssembly Postgres writing to the local filesystem, and it allows exactly one writer, so
+it cannot back a serverless deployment: each function instance would open its own empty
+database on a read-only filesystem. The driver switch is the presence of `DATABASE_URL` and
+nothing else, so this is a one-variable change with no code edit anywhere.
 
-Once those exist the remaining sequence is mechanical, and the build already runs migrations
-itself:
+Provisioning one needs an interactive signup (Vercel Marketplace → Neon, or Neon/Supabase
+directly). The free tiers are ample — the seeded catalogue is 189 albums and 1,165 tracks.
+
+**Block 2 — `vercel login`.**
+
+The Vercel CLI is now installed (`vercel --version` → 59.17.0) and reports `Logged out`.
+Two paths were tried from here and both are closed:
+
+- *The Vercel MCP surface* creates projects but cannot read them back. `create_git_project`
+  returned a real project id for `deadwax-web` (`prj_Z81DscqkfS7c1UXgxXcmXhd8fgHc`) and then
+  failed to verify its own git link with a 404, and `list_projects` for the only team on the
+  account returns `[]` while `create` reports `deadwax` already exists. Its write scope and its
+  read scope are not the same scope, so it cannot set environment variables or confirm a link.
+- *`vercel deploy --temporary`*, which needs no login, **builds locally** — and a local
+  `vercel build` cannot complete on this machine. Vercel's build output deduplicates identical
+  functions with symlinks, and symlink creation is denied to a non-elevated process here:
+  `New-Item -ItemType SymbolicLink` fails with *"Administrator privilege required"* on both
+  `C:` and `D:`. That is Windows Developer Mode being off, not a project problem, and it does
+  not affect a normal `vercel deploy`, which builds on Vercel's own Linux builders.
+
+**The sequence once you have both.** The build runs migrations itself, so there is no separate
+migrate step:
 
 ```bash
 vercel login
-vercel link --project deadwax-app
-vercel env add DATABASE_URL production     # the connection string
-vercel env add AUTH_SECRET production      # openssl rand -base64 32
-vercel env add CRON_SECRET production      # openssl rand -hex 32
-vercel deploy --prod                       # migrations run inside the build
+vercel link --project deadwax-web        # or pick one of the projects below
+vercel env add DATABASE_URL production   # paste the connection string
+vercel env add AUTH_SECRET production    # openssl rand -base64 32
+vercel env add CRON_SECRET production    # openssl rand -hex 32
+vercel deploy --prod                     # migrations run inside the build
 
-# then seed the hosted database once
+# then seed the hosted database once, from here
 DATABASE_URL=<the connection string> npm run seed
-DATABASE_URL=<the connection string> npm run smoke   # 68 checks against hosted Postgres
+DATABASE_URL=<the connection string> npm run smoke        # 68 checks against hosted Postgres
+
+# and once it is live, point the probe at the real thing
+PROBE_BASE_URL=https://<your-domain> PROBE_ALLOW_REMOTE=1 npm run security:probe
 ```
 
 `npm run smoke` against the hosted URL is the step that proves the dual-driver architecture is
-actually dual — it is the reason that script asserts rows rather than printing them.
+actually dual — it is the reason that script asserts rows rather than printing them. The probe
+against HTTPS additionally exercises the two assertions a plain-HTTP origin cannot:
+`Strict-Transport-Security` and the `Secure` cookie flag.
+
+Optional, and only after the first successful deploy:
+`DATABASE_URL=<…> npm run admin:grant -- you@example.com` makes an account an administrator,
+which is the only way to reach `/admin`. It takes the **email address**, matched through the
+same `lower()` expression as the unique index, and it is the only writer of `users.role`
+outside `app/actions/admin.ts`. There is deliberately no self-service path.
+
+**Three Vercel projects exist and you want one.** `deadwax`, `deadwax-app`
+(`prj_AzCyWAteApJ088GscNUL5n3nSzzd`) and `deadwax-web`
+(`prj_Z81DscqkfS7c1UXgxXcmXhd8fgHc`) were each created by a tool call that could not then read
+its own result. Keep whichever the dashboard shows correctly linked to
+`ManvikPasula/deadwax` and delete the other two.

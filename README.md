@@ -123,7 +123,7 @@ Drizzle ORM + raw SQL where aggregates need it
 Postgres (hosted) or PGlite (local), one variable switches
 Auth.js v5, Credentials only, JWT sessions, no adapter
 Zod 4, one shared schema module
-Server Actions only — three route handlers exist, all for non-form paths
+Server Actions only — four route handlers exist, all for non-form paths
 Vitest — pure suites, plus integration suites against a real throwaway PGlite
 ```
 
@@ -224,6 +224,23 @@ A constant with a number tells you *what*. A constant with a rejected alternativ
 whether the number still applies when the domain changes.
 
 ---
+
+## Deploying
+
+`npm run build` runs the migrations and then the build, in that order, with `&&` — so a
+deployment whose schema did not land does not produce a running site. Three variables are
+needed in production and only the first is strictly required:
+
+| Variable | Needed | Absent means |
+| --- | --- | --- |
+| `AUTH_SECRET` | **yes** | `assertEnv()` throws at boot, by design |
+| `DATABASE_URL` | **in practice** | PGlite, which is one-writer and filesystem-backed, so not viable on serverless |
+| `CRON_SECRET` | no | `/api/cron/prune` 404s rather than running unauthenticated |
+
+`docs/TASKS.md` ends with the full sequence, including the two verification steps worth running
+against the hosted instance — `npm run smoke` with a real `DATABASE_URL`, which is what proves
+the dual-driver architecture is actually dual, and the security probe over HTTPS, which
+exercises the two assertions a plain-HTTP origin cannot.
 
 ## Security
 
