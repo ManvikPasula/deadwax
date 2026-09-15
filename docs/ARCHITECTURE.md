@@ -1815,6 +1815,20 @@ is attacker-controlled and this function would need to change with it* (I-34).
 **`pruneRateLimits` is scheduled** (brief defect #10). That table is also a list of email
 addresses, so any data-retention review must cover it.
 
+It is one of **five** sweeps, and they live in `lib/db/queries/prune.ts` rather than inside the
+route: the layering doctrine puts SQL in a query module, and a private function in a route file
+has no caller a test can reach. `tests/prune.test.ts` drives every sweep against a real
+throwaway Postgres, and every assertion is **paired** — something that must go, and something
+one predicate away that must stay. `is_guest = true` on the dead-guest sweep is asserted from
+both sides, because dropping it would delete every account older than three weeks while leaving
+every other test in the file passing.
+
+The module deliberately **does not** self-gate on `requireAdmin()`, unlike every other
+privileged module here (I-20): its only caller is a scheduler with no session at all, so a gate
+would make the route permanently uncallable and the usual fix for that is a flag. What stands in
+for it: the bearer secret, the 404 when the secret is unset, and the fact that **no function in
+the module takes a parameter** — every filter is a constant compiled into the statement.
+
 ### 10.2 The shared Zod schema library
 
 > Validation lives here rather than beside each action so there is one definition per rule
@@ -2152,6 +2166,20 @@ failed page.**
 2, no repeat within a page, hourly seed rotation, and per-page keying (`"home"`,
 `"album:{id}"`). **The counters are explicitly reporting, not billing.**
 
+**Five surfaces serve, one slot each**, and per-page keying only does anything because more than
+one of them exists: `/` keyed `home` when signed out and `feed` when signed in (the route renders
+two different pages), `/album/[slug]` keyed `album:{id}`, `/artist/[slug]` keyed `artist:{id}`,
+and `/@[username]` keyed by **the profile's owner** rather than the viewer — the viewer is
+already in the seed, so keying on the owner is what makes walking five profiles show five
+different units. Each page calls `serveAds` **once**, never once per slot: two independent serves
+share no `placed` set, so a one-row inventory would render the same card twice.
+
+`/spotlight` is the exception to both the ceiling and the Pro exemption, and deliberately: the
+placements *are* the content there, so capping them at two would hide most of the list the page
+exists to publish, and serving a Pro member nothing would hand them an empty page for a route
+they opened on purpose. It calls `fetchAdCandidates` directly rather than `serveAds`, because
+`serveAds` is the interruption planner and none of its four jobs is wanted there.
+
 **The impression beacon** is an invisible `absolute inset-0` span with a `sent` latch and an
 `IntersectionObserver` at `threshold: 0.5` — **half the unit must be on screen**, *so a sliver
 at the edge of the viewport does not count.* `keepalive: true` so navigating away does not drop
@@ -2166,8 +2194,12 @@ record. **No session is read, no cookie is set, nothing about who saw it is stor
 worst outcome is an inflated number in a report*, which is what makes the endpoint
 uninteresting to attack.
 
-`GET /api/ads/[id]/click` — **over the limit the click still forwards, it is just not
-counted**, because *refusing to forward somebody who clicked a link is worse than an uncounted
+`GET /api/ads/[id]/click` — a **malformed** id is a 400 and a **valid id with nothing behind
+it** is a redirect to `/`, because those two answers go to different callers: no anchor in the
+product can produce `/api/ads/abc/click`, so nobody's click is being refused, while a member
+who clicked a card that has since been paused *can* reach the second case and a status code
+would replace the page they wanted with an error they cannot act on. **Over the limit the click
+still forwards, it is just not counted**, because *refusing to forward somebody who clicked a link is worse than an uncounted
 click.* `clickTarget` re-tests `/^https?:\/\//i` on the stored URL **before returning it**, so a
 `javascript:` URL that somehow reached the column can never become a redirect (a test writes
 exactly that). **No open redirect is possible because the destination comes from the row, never
@@ -2415,7 +2447,7 @@ config (`export const revalidate = 0`).
 | `/forgot` `/reset` | `?token` | public | `noindex`, `no-referrer` |
 | `/admin` `/admin/ads` | `?q &page` | **404** for non-admins | `noindex`, `no-referrer` |
 | `POST /api/ads/impression` | JSON | none | same-origin → 403; `adEventByIp` → 429; bad JSON/id → 400 |
-| `GET /api/ads/[id]/click` | path id | none | redirects even when throttled |
+| `GET /api/ads/[id]/click` | path id | none | malformed id → 400; dead ad → 302 `/`; redirects even when throttled |
 | `GET /api/cron/prune` | — | `CRON_SECRET` bearer | **New** (brief defect #10) |
 | `/api/auth/[...nextauth]` | — | — | `export const { GET, POST } = handlers` |
 
