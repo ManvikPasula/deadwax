@@ -1,0 +1,26 @@
+# What never needs uploading to a builder.
+#
+# `vercel deploy` from a working copy uploads the directory, and two of the things in a
+# developed clone are enormous: `.next` (a local build, ~1 GB with the Turbopack dev cache) and
+# `.pglite` (the seeded local database, ~60 MB). Neither is an input to a Vercel build — the
+# builder runs `npm run build` itself, and a hosted deployment reads `DATABASE_URL` rather than
+# the local WASM database — so uploading them costs minutes and buys nothing.
+#
+# `.pglite` additionally must not travel: it is a real database containing seeded member rows,
+# password hashes and email addresses. A local fixture is still a file full of credentials.
+
+.next/
+.pglite/
+node_modules/
+
+# Local secrets. Already git-ignored; ignored here too, because a CLI deploy reads the working
+# copy rather than the commit, so a `.gitignore` entry is not a guarantee at this boundary.
+.env
+.env.local
+.env*.local
+
+# Not inputs to a build.
+docs/
+tests/
+coverage/
+*.tsbuildinfo
