@@ -15,8 +15,9 @@ Verification at time of writing:
 | `npm run lint` (`--max-warnings 0`) | clean |
 | `npm test` | **354 tests green across 16 suites** |
 | `npm run build` | succeeds; **39 route entries**, all server-rendered on demand bar `/icon.svg` |
-| `npm run smoke` | **68/68** against PGlite |
-| `npm run security:probe` (live dev server) | **94 assertions, 91 passed, 0 failed, 0 warnings, 3 notes** |
+| `npm run smoke` | **68/68** against PGlite **and 68/68 against hosted Neon Postgres** |
+| `npm run security:probe` (live dev server, hosted database) | **94 assertions, 91 passed, 0 failed, 0 warnings, 3 notes** |
+| `GET /api/cron/prune` with a real secret | 200, all five sweeps executed on genuine Postgres |
 | `npm run taste-eval` | 36 distinct titles across 54 slots, 1 of 10 personas correctly withheld |
 
 The three probe notes are stack-trace checks that are informational on a development server by

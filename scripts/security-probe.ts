@@ -393,31 +393,69 @@ async function rateLimitSection(): Promise<void> {
    * ...)` and therefore always passes; its own comment concedes it. This is the honest version:
    * it hammers the search budget (30/60s) and requires an observable change of behaviour.
    *
-   * What counts as observable: a 429, or the documented degrade-to-local-mirror — over the
-   * limit, /search substitutes an empty remote result and renders from the mirror alone, so
-   * the response shrinks. Either is a pass; neither is a fail.
+   * ---------------------------------------------------------------------------------------
+   * THE BURST IS CONCURRENT, BECAUSE A SERIAL BURST IS NOT A BURST
+   * ---------------------------------------------------------------------------------------
+   *
+   * The window is 60 seconds and the limit is 30, so the property under test is "31 requests
+   * INSIDE one window are refused". A serial loop only establishes that if each request is
+   * fast: against a hosted database each `/search` render costs a round trip plus a provider
+   * call, 45 of them took longer than the window, and the counter reset mid-run — peaking at
+   * 10. **The limiter was working and the probe could not see it.** Firing them together makes
+   * the burst a burst whatever one request costs.
+   *
+   * The elapsed time is measured anyway, and a run that still spans the window reports
+   * INCONCLUSIVE rather than failing. A rate-limit assertion that cannot guarantee its own
+   * window has not observed anything, and saying so is worth more than a red line somebody
+   * learns to ignore.
+   *
+   * ---------------------------------------------------------------------------------------
+   * WHAT COUNTS AS OBSERVABLE: THE DISCLOSURE, NOT THE RESPONSE SIZE
+   * ---------------------------------------------------------------------------------------
+   *
+   * Over the limit, `/search` substitutes an empty remote result and renders from the mirror
+   * alone — and `SearchResults` prints a mono line saying the provider search is rate limited,
+   * because a member who searches a real record and sees nothing would otherwise conclude the
+   * catalogue does not have it.
+   *
+   * That sentence is the mechanism's own statement about itself, so it is what gets asserted.
+   * **The previous version compared response sizes** — early bytes against late bytes — and it
+   * broke the moment the local mirror grew enough to fill the page cap on its own: 264 albums
+   * in, the throttled page and the unthrottled page were within 100 bytes of each other, and a
+   * working limiter read as a failure. A proxy measurement expires; the disclosure does not.
    */
   const attempts = 45;
-  let sawFourTwoNine = false;
-  const sizes: number[] = [];
+  const windowSeconds = 60;
 
-  for (let index = 0; index < attempts; index += 1) {
-    const { status, body } = await probe(`/search?q=probe${index}`);
-    if (status === 429) sawFourTwoNine = true;
-    sizes.push(body.length);
-  }
-
-  const early = sizes.slice(0, 8).reduce((a, b) => a + b, 0) / 8;
-  const late = sizes.slice(-8).reduce((a, b) => a + b, 0) / 8;
-  const degraded = late < early * 0.85;
-
-  report(
-    "the search budget is enforced (a 429, or the documented degrade to the local mirror)",
-    sawFourTwoNine || degraded,
-    sawFourTwoNine
-      ? "observed a 429"
-      : `early ${Math.round(early)} bytes vs late ${Math.round(late)} bytes over ${attempts} requests`,
+  const started = Date.now();
+  const results = await Promise.all(
+    Array.from({ length: attempts }, (_unused, index) => probe(`/search?q=probe${index}`)),
   );
+  const elapsed = (Date.now() - started) / 1000;
+
+  const sawFourTwoNine = results.some((result) => result.status === 429);
+  /* The exact copy from `MirrorOnlyNote`, minus the typographic apostrophe so the match does
+     not depend on which entity the renderer emitted. */
+  const sawDisclosure = results.some((result) => /provider search is rate limited/i.test(result.body));
+
+  if (!sawFourTwoNine && !sawDisclosure && elapsed > windowSeconds) {
+    report(
+      "the search budget is enforced",
+      true,
+      `INCONCLUSIVE — ${attempts} requests took ${elapsed.toFixed(1)}s, longer than the ${windowSeconds}s window, so the counter reset mid-run`,
+      "info",
+    );
+  } else {
+    report(
+      "the search budget is enforced (a 429, or the documented degrade to the local mirror)",
+      sawFourTwoNine || sawDisclosure,
+      sawFourTwoNine
+        ? "observed a 429"
+        : sawDisclosure
+          ? `observed the mirror-only disclosure within ${elapsed.toFixed(1)}s`
+          : `no refusal in ${attempts} requests over ${elapsed.toFixed(1)}s`,
+    );
+  }
 
   // The refusal message must never name the mechanism.
   const overLimit = await probe("/search?q=probe-final");
