@@ -24,6 +24,11 @@
  *                          would OVERRIDE a correct answer with a wrong one — every
  *                          verification link in production would point at the operator's
  *                          laptop.
+ *   DATABASE_URL           Only when the project has none. A Marketplace integration injects it
+ *                          into every environment and owns its rotation, so a pushed copy would
+ *                          shadow the platform's value and go stale — the symptom is a 28P01 at
+ *                          build time that looks exactly like a broken script. Pushed only for
+ *                          the claimable-database route, where the string lives nowhere else.
  *   DATABASE_URL_UNPOOLED  Written by the Neon CLI beside the pooled string. Serverless wants
  *                          the pooled endpoint; the direct one is for long-lived connections
  *                          and migrations, and this app runs its migrations from the build
@@ -62,24 +67,60 @@ const TARGETS = ["production", "preview"];
 
 const DEFAULT_PROJECT = "deadwax-web";
 
+/**
+ * How the CLI gets invoked, and the shape of a wrong diagnosis worth keeping written down.
+ *
+ * The values are fed to `vercel env add` ON STDIN, and the first version of this script spawned
+ * `vercel.cmd` with `shell: true` — the only way Node can execute a `.cmd` shim. The first
+ * deploy then failed with `password authentication failed for user 'neondb_owner'` (28P01), and
+ * the obvious inference was that stdin through `cmd.exe` had corrupted the password: the string
+ * was structurally intact, since the role name survived, and wrong in exactly the bytes nobody
+ * can see.
+ *
+ * **THAT INFERENCE WAS WRONG, AND THE CODE KEPT THE CHANGE ANYWAY.** Removing the shell did not
+ * fix it. What did: running the same connection string locally, where it had worked an hour
+ * earlier, and getting the identical 28P01 — so the credential itself had been revoked. The
+ * Neon project was a claimable one, an attempt to claim it into a Vercel-managed organisation
+ * is unsupported and left it in a `pending` state, and a pending claim revokes access and
+ * permits nothing but status polling.
+ *
+ * The shell is still gone, on its own merits rather than on that story: running the package's
+ * JS entry under THIS Node gives a clean argv and a clean stdin on every platform, and it costs
+ * nothing. But the reason it is gone is "this removes a class of risk", not "this was the bug"
+ * — and the difference matters, because a comment claiming a fix that was never demonstrated is
+ * how the next person stops looking for the real cause.
+ *
+ * The `.cmd` shim remains as a fallback for an install layout where the entry cannot be found,
+ * and the fallback is announced rather than silent.
+ */
 function resolveVercel() {
-  // `where`/`which` first: a PATH install is the normal case and should win.
+  /** The package's own JS entry, run under this Node: no shell, so stdin is bytes. */
+  try {
+    const prefix = execFileSync("npm", ["prefix", "-g"], { encoding: "utf8", shell: true }).trim();
+    for (const relative of [
+      join("node_modules", "vercel", "dist", "vc.js"),
+      join("lib", "node_modules", "vercel", "dist", "vc.js"),
+    ]) {
+      const entry = join(prefix, relative);
+      if (existsSync(entry)) {
+        return { bin: process.execPath, lead: [entry], shell: false, display: entry, viaShim: false };
+      }
+    }
+  } catch {
+    // fall through to the shim
+  }
+
   const probe = spawnSync(process.platform === "win32" ? "where" : "which", ["vercel"], {
     encoding: "utf8",
   });
   if (probe.status === 0) {
     const first = probe.stdout.split(/\r?\n/).find((line) => line.trim().length > 0);
-    if (first) return first.trim();
-  }
-
-  try {
-    const prefix = execFileSync("npm", ["prefix", "-g"], { encoding: "utf8", shell: true }).trim();
-    for (const name of ["vercel.cmd", "vercel"]) {
-      const candidate = join(prefix, name);
-      if (existsSync(candidate)) return candidate;
+    if (first) {
+      const path = first.trim();
+      // A POSIX shim is an executable script and needs no shell; a Windows `.cmd` does.
+      const viaShim = process.platform === "win32";
+      return { bin: path, lead: [], shell: viaShim, display: path, viaShim };
     }
-  } catch {
-    // fall through to the message below
   }
   return null;
 }
@@ -108,22 +149,20 @@ function readEnvFile(path) {
   return values;
 }
 
-function run(bin, args, options = {}) {
-  return spawnSync(bin, args, {
+function run(cli, args, options = {}) {
+  return spawnSync(cli.bin, [...cli.lead, ...args], {
     encoding: "utf8",
     env: { ...process.env, VERCEL_TELEMETRY_DISABLED: "1" },
-    // `shell` on win32 so a `.cmd` shim is executable. The arguments here are literals and
-    // values from a local file the operator owns, never from a request.
-    shell: process.platform === "win32",
+    shell: cli.shell,
     ...options,
   });
 }
 
 function main() {
   const project = process.argv[2] ?? DEFAULT_PROJECT;
-  const vercel = resolveVercel();
+  const cli = resolveVercel();
 
-  if (!vercel) {
+  if (!cli) {
     console.error(
       "[vercel-setup] the Vercel CLI is not installed.\n" +
         "  npm i -g vercel\n" +
@@ -132,7 +171,7 @@ function main() {
     process.exit(1);
   }
 
-  const who = run(vercel, ["whoami"]);
+  const who = run(cli, ["whoami"]);
   if (who.status !== 0) {
     /*
      * THE ONE STEP THIS SCRIPT CANNOT DO FOR YOU. `vercel login` opens a browser and waits for
@@ -141,7 +180,7 @@ function main() {
      */
     console.error(
       "[vercel-setup] the Vercel CLI is not logged in.\n\n" +
-        `  ${vercel} login\n\n` +
+        `  ${cli.display} login\n\n` +
         "The resolved path is printed rather than the bare command because the npm global prefix\n" +
         "is often not on PATH on Windows. Run it in a REAL terminal window: the CLI defaults to\n" +
         "--non-interactive when it detects an agent, and its account picker needs arrow keys.\n" +
@@ -150,6 +189,22 @@ function main() {
     process.exit(1);
   }
   console.info(`[vercel-setup] authenticated as ${who.stdout.trim().split(/\r?\n/).pop()}`);
+
+  if (cli.viaShim) {
+    /*
+     * ANNOUNCED RATHER THAN SILENT. Values reach `vercel env add` on stdin, and stdin through
+     * `cmd.exe` is one more layer between a password and the API — never demonstrated to corrupt
+     * anything here (see the note above; the failure that looked like corruption was a revoked
+     * credential), but it is the layer to suspect first if a pushed value ever fails to
+     * authenticate. A warning is the right level: the shim works, and the alternative to trying
+     * is doing nothing.
+     */
+    console.warn(
+      `[vercel-setup] note: using the CLI shim at ${cli.display} rather than the package entry.\n` +
+        "  Values are piped through a shell. If a pushed variable fails to authenticate, set it\n" +
+        "  from the dashboard and compare.",
+    );
+  }
 
   const env = readEnvFile(".env.local");
   const missing = PUSH.filter((key) => !env.has(key));
@@ -163,13 +218,41 @@ function main() {
     process.exit(1);
   }
 
-  const link = run(vercel, ["link", "--yes", "--project", project], { stdio: "inherit" });
+  const link = run(cli, ["link", "--yes", "--project", project], { stdio: "inherit" });
   if (link.status !== 0) {
     console.error(`[vercel-setup] could not link to project "${project}".`);
     process.exit(1);
   }
 
-  for (const key of PUSH) {
+  /*
+   * DATABASE_URL IS SKIPPED WHEN THE PROJECT ALREADY HAS ONE, AND THAT IS THE COMMON CASE.
+   *
+   * A Neon (or Supabase, or any Marketplace) integration injects `DATABASE_URL` into production,
+   * preview and development itself. Pushing a local copy over the top would **shadow the value
+   * the platform owns** with one that goes stale the moment the provider rotates a credential —
+   * and the symptom of that is a 28P01 at build time, which looks exactly like a broken script.
+   * This project hit that failure from the other direction and it cost an hour.
+   *
+   * So the rule is: the platform's value wins if there is one, and a local `DATABASE_URL` is
+   * pushed only when nothing is providing it — which is the case for the claimable-database
+   * route, where the connection string genuinely lives nowhere but `.env.local`.
+   *
+   * `env ls` prints names, environments and types but never values, so this is a cheap read
+   * that discloses nothing.
+   */
+  const existing = run(cli, ["env", "ls"]);
+  const hasProvidedDatabaseUrl = /^\s*DATABASE_URL\s/m.test(existing.stdout ?? "");
+  const push = PUSH.filter((key) => {
+    if (key !== "DATABASE_URL" || !hasProvidedDatabaseUrl) return true;
+    console.info(
+      "[vercel-setup] DATABASE_URL is already set on the project — leaving it alone.\n" +
+        "  A Marketplace integration owns that value in all three environments. Overwriting it\n" +
+        "  with the local copy is how a rotated credential becomes a build failure.",
+    );
+    return false;
+  });
+
+  for (const key of push) {
     for (const target of TARGETS) {
       /*
        * REMOVE THEN ADD, rather than `add --force`.
@@ -179,9 +262,9 @@ function main() {
        * because there was nothing there is the expected path on a fresh project and is
        * deliberately not treated as an error.
        */
-      run(vercel, ["env", "rm", key, target, "--yes"]);
+      run(cli, ["env", "rm", key, target, "--yes"]);
 
-      const added = run(vercel, ["env", "add", key, target], { input: env.get(key) });
+      const added = run(cli, ["env", "add", key, target], { input: env.get(key) });
       if (added.status !== 0) {
         // The VALUE is never printed, on any path. The CLI's own stderr is, because it says
         // what went wrong and does not echo the input.
@@ -193,7 +276,7 @@ function main() {
   }
 
   console.info("[vercel-setup] deploying to production — migrations run inside the build");
-  const deploy = run(vercel, ["deploy", "--prod", "--yes"], { stdio: "inherit" });
+  const deploy = run(cli, ["deploy", "--prod", "--yes"], { stdio: "inherit" });
   if (deploy.status !== 0) {
     console.error("[vercel-setup] the deployment failed. The build log above says why.");
     process.exit(1);

@@ -231,6 +231,9 @@ whether the number still applies when the domain changes.
 
 ## Deploying
 
+Live: **<https://deadwax-web.vercel.app>**
+
+
 `npm run build` runs the migrations and then the build, in that order, with `&&` — so a
 deployment whose schema did not land does not produce a running site. Three variables are
 needed in production and only the first is strictly required:
@@ -241,27 +244,35 @@ needed in production and only the first is strictly required:
 | `DATABASE_URL` | **in practice** | PGlite, which is one-writer and filesystem-backed, so not viable on serverless |
 | `CRON_SECRET` | no | `/api/cron/prune` 404s rather than running unauthenticated |
 
-There is no need to sign up for a database to get one. Neon's claimable flow provisions a
-Lakebase Postgres with no account and no API key, and you attach it to an account afterwards:
+The live instance runs on **Neon Lakebase Postgres provisioned through the Vercel
+Marketplace**, which is the right shape for a Vercel deployment: Vercel injects `DATABASE_URL`
+into production, preview and development itself, so no script pushes it, it exists in every
+environment at once, and a credential rotation needs nothing re-run.
 
 ```powershell
-npx neon@latest claim create --service postgres --file .env.local   # writes DATABASE_URL
-npx neon@latest claim accept                                        # keep it: 72h otherwise
+vercel integration add neon --plan free_v3 -m region=iad1 -m auth=false `
+  --environment production --environment preview --environment development
 ```
 
-An unclaimed project is capped at 100 MB and expires in 72 hours; claiming removes both limits
-and changes nothing about the connection string.
+`auth=false` because Auth.js already owns sessions here; Neon Auth would be an unused product
+surface. `region=iad1` to match where the functions run.
+
+If there is no account to provision against, Neon's **claimable** flow gives a working database
+with no signup and no API key — `npx neon@latest claim create --service postgres --file
+.env.local` — but read `docs/TASKS.md` first: it expires in 72 hours, and **it cannot be claimed
+into a Vercel-managed Neon organisation**, which is exactly the case this project hit.
 
 Then, once `vercel login` has been done — the one step that is interactive by construction:
 
 ```powershell
-npm run vercel:setup        # link, push DATABASE_URL / AUTH_SECRET / CRON_SECRET, deploy
+npm run vercel:setup        # link, push AUTH_SECRET + CRON_SECRET, deploy
 ```
 
 It reads the values from `.env.local` rather than asking for them to be retyped, and its
-docblock lists every variable it deliberately does **not** push. The most important of those is
-`NEXT_PUBLIC_SITE_URL`: `env.siteUrl` already falls back to `VERCEL_PROJECT_PRODUCTION_URL`, so
-pushing the local value would point every verification email at a laptop.
+docblock lists every variable it deliberately does **not** push. The two that matter:
+`DATABASE_URL`, because the integration owns it, and `NEXT_PUBLIC_SITE_URL`, because
+`env.siteUrl` already falls back to `VERCEL_PROJECT_PRODUCTION_URL` and pushing the local value
+would point every verification email at a laptop.
 
 `docs/TASKS.md` ends with the full sequence, including the verification steps worth running
 against the hosted instance — `npm run smoke` with a real `DATABASE_URL`, which is what proves

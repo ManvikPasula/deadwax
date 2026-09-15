@@ -141,101 +141,98 @@ design — Next serves overlays there and not in production.
 - [x] `git init`, GitHub repo, push — <https://github.com/ManvikPasula/deadwax>
 - [x] Vercel project created
 
-### Deploying — one interactive step is left
+## Deployed
 
-**The database is provisioned, migrated and seeded.** It is a Neon Lakebase Postgres created
-through the claimable-database flow, which needs no signup and no API key:
+**<https://deadwax-web.vercel.app>**
+
+Vercel project `deadwax-web` in `manvik-pasulas-projects`, database `neon-camel-drawer` —
+Neon Lakebase Postgres on the free plan, region `iad1`, provisioned through the Vercel
+Marketplace and connected to production, preview and development. Migrated and seeded:
+**191 artists, 288 albums, 1234 tracks, 1864 logs, 55 albums with MusicBrainz critic votes.**
+
+| Verified against the live instance | Result |
+| --- | --- |
+| `npm run smoke` | **68/68**, `driver: Postgres (hosted)` |
+| the scale bridge on real data | 55 albums, range **6.0–10.0** — above 5, so MusicBrainz's 0–5 was doubled exactly once |
+| `/` `/albums` `/artists` `/lists` `/members` `/spotlight` | 200, each rendering seeded rows |
+| `/admin` `/admin/ads` | **404** to an anonymous caller (I-21) |
+| `GET /api/cron/prune` | 404 unauthenticated; **200 with the secret**, all five sweeps run |
+| response headers | all seven, **including HSTS** — the one assertion a plain-HTTP origin cannot exercise |
+
+```powershell
+npm run vercel:setup        # link, push AUTH_SECRET + CRON_SECRET, deploy to production
+npm run smoke               # reads .env.local, so this is the hosted database
+```
+
+`DATABASE_URL` is **not** pushed by that script any more and must not be: the Marketplace
+integration injects it into all three environments itself, so Vercel owns the value, it exists
+everywhere at once, and a credential rotation needs no script re-run. A manually-pushed copy
+would shadow the integration's and go stale silently.
+
+### How the database got here, including the wrong turn
+
+The first attempt used Neon's **claimable** flow, which needs no signup and no API key:
 
 ```powershell
 npx neon@latest claim create --service postgres --file .env.local
 ```
 
-That wrote `DATABASE_URL`, `DATABASE_URL_UNPOOLED` and `NEON_BRANCH` into `.env.local` beside
-the existing `AUTH_SECRET`, and `CRON_SECRET` was generated locally alongside them. The
-migrations were then applied over the **pooled** endpoint with `rejectUnauthorized: true`,
-which is the first real exercise of the hosted branch of the dual-driver switch — until then
-only PGlite had ever run these migrations.
+That worked, and migrating and seeding over it was the first real exercise of the hosted branch
+of the dual-driver switch — until then only PGlite had ever run these migrations. **But a
+claimable project cannot be claimed into a Vercel-managed Neon organisation, which is what this
+account has**, so it had a 72-hour clock and no way to stop it. Worse, the attempt to claim it
+left the project in a `pending` state, and **a pending claim revokes database access** and
+permits nothing but status polling.
 
-**It is unclaimed, and that is the one thing with a clock on it.** An unclaimed project lives
-**72 hours**, is capped at 100 MB of storage and 1 GB of transfer, and then disappears.
-Claiming transfers it into your own Neon account and removes all three limits:
+That produced a production build failure worth recording, because the first diagnosis was
+wrong:
 
-```powershell
-npx neon@latest claim accept          # opens a browser; sign in, pick a destination
-npx neon@latest claim status          # state, and the expiry to beat
+```
+[migrate] FAILED —
+  Error: Failed query: CREATE SCHEMA IF NOT EXISTS "drizzle"
+  caused by:   error: password authentication failed for user 'neondb_owner'  code=28P01
 ```
 
-Run that before the deadline printed by `claim status`. Nothing about the connection string
-changes when you claim it, so anything already deployed keeps working.
+The inference was that the script's `vercel env add` had corrupted the password on its way
+through `cmd.exe` — plausible, since the string was structurally intact and wrong only in the
+bytes nobody can see. Removing the shell **did not fix it.** What identified the real cause was
+the cheap test: run the same connection string locally, where it had worked an hour earlier,
+and watch it fail identically. The credential, not the transport.
 
-**The remaining step is `vercel login`.** It opens a browser and waits for a confirmation, so
-it is interactive by construction — there is no flag that makes it otherwise, and a token
-pasted into a terminal is a credential in a shell history. Everything after it is scripted:
+Two things were kept from that detour on their own merits:
 
-```powershell
-# In a real PowerShell window, not through an agent: the CLI flips to --non-interactive when it
-# detects one, and the account picker needs arrow keys. `vercel` is not necessarily on PATH —
-# the npm global prefix here is D:
-pm-global.
-D:
-pm-globalercel.cmd login
+- `scripts/migrate-deploy.ts` now prints the **cause chain**, not just `error.message`. Drizzle
+  wraps every driver error, the migrator's first statement is that `CREATE SCHEMA`, and so a
+  connection failure, a permissions failure and a genuine SQL failure all used to print the
+  same line — which was the entire content of a failed production build. The fields printed are
+  the `safeErrorDetail` whitelist (I-35): never `query`, `parameters` or `stack`, because build
+  logs are readable by anyone with project access.
+- `scripts/vercel-setup.mjs` runs the CLI's own JS entry under this Node instead of the `.cmd`
+  shim through a shell, which gives a clean argv and stdin everywhere. Its docblock says
+  explicitly that this was **not** the bug, because a comment claiming a fix that was never
+  demonstrated is how the next person stops looking.
 
-npm run vercel:setup         # link, push the three variables, deploy to production
-```
+### The bits that still need a person
 
-`scripts/vercel-setup.mjs` reads the values from `.env.local` rather than asking you to retype
-them — the connection string is a hundred-odd characters with a password in it, and the failure
-mode of one mistyped character is a deployment that builds cleanly and 500s on every page. It
-pushes exactly `DATABASE_URL`, `AUTH_SECRET` and `CRON_SECRET`, to both production and preview,
-and the script's docblock lists every variable it deliberately leaves behind and why. The most
-important omission: `NEXT_PUBLIC_SITE_URL` is `http://localhost:3000` locally and `env.siteUrl`
-already falls back to `VERCEL_PROJECT_PRODUCTION_URL`, so pushing it would replace a correct
-answer with one that points every verification email at your laptop.
+- **`vercel login`** was, and remains, the one interactive step. Run it in a real terminal
+  window: the CLI defaults to `--non-interactive` when it detects an agent, and its account
+  picker needs arrow keys.
+- **Three Vercel projects exist**, all git-linked to the same repository, so every push builds
+  three times. `deadwax-web` is the live one; `deadwax` and `deadwax-app`
+  (`prj_AzCyWAteApJ088GscNUL5n3nSzzd`) were created by MCP calls that could not read their own
+  results, and deleting them is a dashboard click.
+- **`npm run admin:grant -- you@example.com`** is the only way to reach `/admin`, and it takes
+  the email address rather than the username.
+- **The dead claimable project** `billowing-water-90138651` is stuck in `pending` and expires on
+  its own on 2026-09-18. `npx neon@latest claim delete` can drop the local record early.
 
-Then verify against the live instance:
+### Going back to local PGlite
 
-```powershell
-# PowerShell has no inline env-var prefix — `VAR=x cmd` is a parse error, not an env-prefixed
-# run, and it fails quietly enough to look like the tool is broken. Assign, then call.
-npm run smoke                       # reads .env.local, so this is the hosted database
+Comment out `DATABASE_URL` in `.env.local`. `npm run db:local` refuses to run while it is set,
+which is the guard that stops a "local" command touching the hosted database. `npm test` is
+safe either way: every database-backed suite deletes `process.env.DATABASE_URL` in `beforeAll`
+before importing `@/lib/db`, and that line must never be removed.
 
-$env:PROBE_BASE_URL   = "https://<domain>"
-$env:PROBE_ALLOW_REMOTE = "1"
-npm run security:probe              # 94 assertions
-
-npm run admin:grant -- you@example.com   # DATABASE_URL comes from .env.local; needed for /admin
-```
-
-`npm run smoke` reads `.env.local`, so with `DATABASE_URL` set it now targets Neon rather than
-PGlite — that is the step that proves the dual-driver architecture is actually dual, and it is
-the reason that script asserts rows rather than printing them. The probe over HTTPS additionally
-exercises the two assertions a plain-HTTP origin cannot: `Strict-Transport-Security` and the
-`Secure` cookie flag. `admin:grant` takes the **email address**, matched through the same
-`lower()` expression as the functional unique index, and is the only writer of `users.role`
-outside `app/actions/admin.ts`.
-
-**To go back to local PGlite**, comment out `DATABASE_URL` in `.env.local`. `npm run db:local`
-refuses to run while it is set, which is the guard that stops a "local" command from touching
-the hosted database. `npm test` is safe either way: every database-backed suite deletes
-`process.env.DATABASE_URL` in `beforeAll` before importing `@/lib/db`, and that line must never
-be removed.
-
-### Two notes on what could not be done from here
-
-**The Vercel MCP surface creates projects it cannot read back.** `create_git_project` returned a
-real project id for `deadwax-web` (`prj_Z81DscqkfS7c1UXgxXcmXhd8fgHc`) and then failed to verify
-its own git link with a 404. `list_projects` for the account's only team returns `[]` — and it
-404s on `cliffhanger` (`prj_SzEK7KsarPK4vNK7pePW5jy8qY0R`), a long-standing project in that team
-that is live right now, so this is not new-project propagation. Its write scope and its read
-scope are not the same scope, so it cannot set an environment variable or confirm a link. Three
-projects exist as a result — `deadwax`, `deadwax-app` (`prj_AzCyWAteApJ088GscNUL5n3nSzzd`) and
-`deadwax-web`. Keep whichever the dashboard shows linked to `ManvikPasula/deadwax` and delete
-the other two; `npm run vercel:setup <name>` takes the name as its one argument.
-
-**`vercel deploy --temporary` needs no login but builds locally, and a local build cannot
-complete on this machine.** Vercel's build output deduplicates identical serverless functions
-with symlinks, and symlink creation is denied to a non-elevated Windows process here —
-confirmed directly rather than inferred from the error: `New-Item -ItemType SymbolicLink` fails
-with *"Administrator privilege required"* on both `C:` and `D:`, so Developer Mode is off. This
-does not affect `npm run vercel:setup`, which uses a plain `vercel deploy` and builds on
-Vercel's own Linux builders.
+Note that the Vercel CLI rewrites `.env.local` with **quoted** values when it pulls. Anything
+reading that file with a naive `cut -d=` gets the quotes too — which is how a correct
+`CRON_SECRET` produced a 404 from the cron route for several minutes.

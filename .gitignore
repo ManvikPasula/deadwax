@@ -14,3 +14,12 @@ npm-debug.log*
 coverage/
 scratch/
 .neon
+# Appended by the Vercel/Neon integration, then tidied. `.vercel` was already listed above,
+# so only the broader env glob is kept -- with the example negated, because `.env*` matches
+# `.env.example`, which IS tracked on purpose. The integration also wrote these lines with
+# CRLF, which git reads as the pattern `.env*` and therefore matches nothing at all.
+.env*
+!.env.example
+
+.vercel
+.env*
