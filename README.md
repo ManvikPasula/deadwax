@@ -237,7 +237,29 @@ needed in production and only the first is strictly required:
 | `DATABASE_URL` | **in practice** | PGlite, which is one-writer and filesystem-backed, so not viable on serverless |
 | `CRON_SECRET` | no | `/api/cron/prune` 404s rather than running unauthenticated |
 
-`docs/TASKS.md` ends with the full sequence, including the two verification steps worth running
+There is no need to sign up for a database to get one. Neon's claimable flow provisions a
+Lakebase Postgres with no account and no API key, and you attach it to an account afterwards:
+
+```bash
+npx neon@latest claim create --service postgres --file .env.local   # writes DATABASE_URL
+npx neon@latest claim accept                                        # keep it: 72h otherwise
+```
+
+An unclaimed project is capped at 100 MB and expires in 72 hours; claiming removes both limits
+and changes nothing about the connection string.
+
+Then, once `vercel login` has been done — the one step that is interactive by construction:
+
+```bash
+npm run vercel:setup        # link, push DATABASE_URL / AUTH_SECRET / CRON_SECRET, deploy
+```
+
+It reads the values from `.env.local` rather than asking for them to be retyped, and its
+docblock lists every variable it deliberately does **not** push. The most important of those is
+`NEXT_PUBLIC_SITE_URL`: `env.siteUrl` already falls back to `VERCEL_PROJECT_PRODUCTION_URL`, so
+pushing the local value would point every verification email at a laptop.
+
+`docs/TASKS.md` ends with the full sequence, including the verification steps worth running
 against the hosted instance — `npm run smoke` with a real `DATABASE_URL`, which is what proves
 the dual-driver architecture is actually dual, and the security probe over HTTPS, which
 exercises the two assertions a plain-HTTP origin cannot.

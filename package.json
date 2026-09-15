@@ -14,6 +14,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:deploy": "tsx scripts/migrate-deploy.ts",
+    "vercel:setup": "node scripts/vercel-setup.mjs",
     "db:local": "tsx --env-file-if-exists=.env.local --conditions=react-server scripts/db-local.ts",
     "db:reset": "tsx scripts/db-reset.ts",
     "seed": "tsx --env-file-if-exists=.env.local --conditions=react-server scripts/seed.ts",

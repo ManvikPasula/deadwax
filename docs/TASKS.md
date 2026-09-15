@@ -140,71 +140,89 @@ design — Next serves overlays there and not in production.
 - [x] `git init`, GitHub repo, push — <https://github.com/ManvikPasula/deadwax>
 - [x] Vercel project created
 
-### Deploying — the two things that need your account, and why neither is a guess
+### Deploying — one interactive step is left
 
-Everything above this line is built, run and verified. Deployment is genuinely blocked on two
-credentials, and both blocks were reproduced rather than assumed.
-
-**Block 1 — a hosted Postgres `DATABASE_URL`.**
-
-The app runs on PGlite with zero configuration, which is what makes a cold clone work. PGlite
-is a WebAssembly Postgres writing to the local filesystem, and it allows exactly one writer, so
-it cannot back a serverless deployment: each function instance would open its own empty
-database on a read-only filesystem. The driver switch is the presence of `DATABASE_URL` and
-nothing else, so this is a one-variable change with no code edit anywhere.
-
-Provisioning one needs an interactive signup (Vercel Marketplace → Neon, or Neon/Supabase
-directly). The free tiers are ample — the seeded catalogue is 189 albums and 1,165 tracks.
-
-**Block 2 — `vercel login`.**
-
-The Vercel CLI is now installed (`vercel --version` → 59.17.0) and reports `Logged out`.
-Two paths were tried from here and both are closed:
-
-- *The Vercel MCP surface* creates projects but cannot read them back. `create_git_project`
-  returned a real project id for `deadwax-web` (`prj_Z81DscqkfS7c1UXgxXcmXhd8fgHc`) and then
-  failed to verify its own git link with a 404, and `list_projects` for the only team on the
-  account returns `[]` while `create` reports `deadwax` already exists. Its write scope and its
-  read scope are not the same scope, so it cannot set environment variables or confirm a link.
-- *`vercel deploy --temporary`*, which needs no login, **builds locally** — and a local
-  `vercel build` cannot complete on this machine. Vercel's build output deduplicates identical
-  functions with symlinks, and symlink creation is denied to a non-elevated process here:
-  `New-Item -ItemType SymbolicLink` fails with *"Administrator privilege required"* on both
-  `C:` and `D:`. That is Windows Developer Mode being off, not a project problem, and it does
-  not affect a normal `vercel deploy`, which builds on Vercel's own Linux builders.
-
-**The sequence once you have both.** The build runs migrations itself, so there is no separate
-migrate step:
+**The database is provisioned, migrated and seeded.** It is a Neon Lakebase Postgres created
+through the claimable-database flow, which needs no signup and no API key:
 
 ```bash
-vercel login
-vercel link --project deadwax-web        # or pick one of the projects below
-vercel env add DATABASE_URL production   # paste the connection string
-vercel env add AUTH_SECRET production    # openssl rand -base64 32
-vercel env add CRON_SECRET production    # openssl rand -hex 32
-vercel deploy --prod                     # migrations run inside the build
-
-# then seed the hosted database once, from here
-DATABASE_URL=<the connection string> npm run seed
-DATABASE_URL=<the connection string> npm run smoke        # 68 checks against hosted Postgres
-
-# and once it is live, point the probe at the real thing
-PROBE_BASE_URL=https://<your-domain> PROBE_ALLOW_REMOTE=1 npm run security:probe
+npx neon@latest claim create --service postgres --file .env.local
 ```
 
-`npm run smoke` against the hosted URL is the step that proves the dual-driver architecture is
-actually dual — it is the reason that script asserts rows rather than printing them. The probe
-against HTTPS additionally exercises the two assertions a plain-HTTP origin cannot:
-`Strict-Transport-Security` and the `Secure` cookie flag.
+That wrote `DATABASE_URL`, `DATABASE_URL_UNPOOLED` and `NEON_BRANCH` into `.env.local` beside
+the existing `AUTH_SECRET`, and `CRON_SECRET` was generated locally alongside them. The
+migrations were then applied over the **pooled** endpoint with `rejectUnauthorized: true`,
+which is the first real exercise of the hosted branch of the dual-driver switch — until then
+only PGlite had ever run these migrations.
 
-Optional, and only after the first successful deploy:
-`DATABASE_URL=<…> npm run admin:grant -- you@example.com` makes an account an administrator,
-which is the only way to reach `/admin`. It takes the **email address**, matched through the
-same `lower()` expression as the unique index, and it is the only writer of `users.role`
-outside `app/actions/admin.ts`. There is deliberately no self-service path.
+**It is unclaimed, and that is the one thing with a clock on it.** An unclaimed project lives
+**72 hours**, is capped at 100 MB of storage and 1 GB of transfer, and then disappears.
+Claiming transfers it into your own Neon account and removes all three limits:
 
-**Three Vercel projects exist and you want one.** `deadwax`, `deadwax-app`
-(`prj_AzCyWAteApJ088GscNUL5n3nSzzd`) and `deadwax-web`
-(`prj_Z81DscqkfS7c1UXgxXcmXhd8fgHc`) were each created by a tool call that could not then read
-its own result. Keep whichever the dashboard shows correctly linked to
-`ManvikPasula/deadwax` and delete the other two.
+```bash
+npx neon@latest claim accept          # opens a browser; sign in, pick a destination
+npx neon@latest claim status          # state, and the expiry to beat
+```
+
+Run that before the deadline printed by `claim status`. Nothing about the connection string
+changes when you claim it, so anything already deployed keeps working.
+
+**The remaining step is `vercel login`.** It opens a browser and waits for a confirmation, so
+it is interactive by construction — there is no flag that makes it otherwise, and a token
+pasted into a terminal is a credential in a shell history. Everything after it is scripted:
+
+```bash
+vercel login                 # the only interactive step
+npm run vercel:setup         # link, push the three variables, deploy to production
+```
+
+`scripts/vercel-setup.mjs` reads the values from `.env.local` rather than asking you to retype
+them — the connection string is a hundred-odd characters with a password in it, and the failure
+mode of one mistyped character is a deployment that builds cleanly and 500s on every page. It
+pushes exactly `DATABASE_URL`, `AUTH_SECRET` and `CRON_SECRET`, to both production and preview,
+and the script's docblock lists every variable it deliberately leaves behind and why. The most
+important omission: `NEXT_PUBLIC_SITE_URL` is `http://localhost:3000` locally and `env.siteUrl`
+already falls back to `VERCEL_PROJECT_PRODUCTION_URL`, so pushing it would replace a correct
+answer with one that points every verification email at your laptop.
+
+Then verify against the live instance:
+
+```bash
+npm run smoke                                                               # against hosted Postgres
+PROBE_BASE_URL=https://<domain> PROBE_ALLOW_REMOTE=1 npm run security:probe  # 94 assertions
+DATABASE_URL=<…> npm run admin:grant -- you@example.com                      # to reach /admin
+```
+
+`npm run smoke` reads `.env.local`, so with `DATABASE_URL` set it now targets Neon rather than
+PGlite — that is the step that proves the dual-driver architecture is actually dual, and it is
+the reason that script asserts rows rather than printing them. The probe over HTTPS additionally
+exercises the two assertions a plain-HTTP origin cannot: `Strict-Transport-Security` and the
+`Secure` cookie flag. `admin:grant` takes the **email address**, matched through the same
+`lower()` expression as the functional unique index, and is the only writer of `users.role`
+outside `app/actions/admin.ts`.
+
+**To go back to local PGlite**, comment out `DATABASE_URL` in `.env.local`. `npm run db:local`
+refuses to run while it is set, which is the guard that stops a "local" command from touching
+the hosted database. `npm test` is safe either way: every database-backed suite deletes
+`process.env.DATABASE_URL` in `beforeAll` before importing `@/lib/db`, and that line must never
+be removed.
+
+### Two notes on what could not be done from here
+
+**The Vercel MCP surface creates projects it cannot read back.** `create_git_project` returned a
+real project id for `deadwax-web` (`prj_Z81DscqkfS7c1UXgxXcmXhd8fgHc`) and then failed to verify
+its own git link with a 404. `list_projects` for the account's only team returns `[]` — and it
+404s on `cliffhanger` (`prj_SzEK7KsarPK4vNK7pePW5jy8qY0R`), a long-standing project in that team
+that is live right now, so this is not new-project propagation. Its write scope and its read
+scope are not the same scope, so it cannot set an environment variable or confirm a link. Three
+projects exist as a result — `deadwax`, `deadwax-app` (`prj_AzCyWAteApJ088GscNUL5n3nSzzd`) and
+`deadwax-web`. Keep whichever the dashboard shows linked to `ManvikPasula/deadwax` and delete
+the other two; `npm run vercel:setup <name>` takes the name as its one argument.
+
+**`vercel deploy --temporary` needs no login but builds locally, and a local build cannot
+complete on this machine.** Vercel's build output deduplicates identical serverless functions
+with symlinks, and symlink creation is denied to a non-elevated Windows process here —
+confirmed directly rather than inferred from the error: `New-Item -ItemType SymbolicLink` fails
+with *"Administrator privilege required"* on both `C:` and `D:`, so Developer Mode is off. This
+does not affect `npm run vercel:setup`, which uses a plain `vercel deploy` and builds on
+Vercel's own Linux builders.
