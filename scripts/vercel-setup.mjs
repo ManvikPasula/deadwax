@@ -141,8 +141,11 @@ function main() {
      */
     console.error(
       "[vercel-setup] the Vercel CLI is not logged in.\n\n" +
-        "  vercel login\n\n" +
-        "That opens a browser and is the only interactive step. Run this script again afterwards.",
+        `  ${vercel} login\n\n` +
+        "The resolved path is printed rather than the bare command because the npm global prefix\n" +
+        "is often not on PATH on Windows. Run it in a REAL terminal window: the CLI defaults to\n" +
+        "--non-interactive when it detects an agent, and its account picker needs arrow keys.\n" +
+        "That is the only interactive step. Run this script again afterwards.",
     );
     process.exit(1);
   }
@@ -196,10 +199,22 @@ function main() {
     process.exit(1);
   }
 
+  /*
+   * THE PROBE HINT IS PRINTED IN THE SHELL THE OPERATOR IS ACTUALLY IN.
+   *
+   * On Windows `VAR=x cmd` is a PARSE ERROR rather than an env-prefixed run, and it fails
+   * quietly enough to read as a broken script rather than as the wrong syntax. PowerShell needs
+   * the assignment and the call as separate statements.
+   */
+  const probeHint =
+    process.platform === "win32"
+      ? '$env:PROBE_BASE_URL = "https://<domain>"; $env:PROBE_ALLOW_REMOTE = "1"; npm run security:probe'
+      : "PROBE_BASE_URL=https://<domain> PROBE_ALLOW_REMOTE=1 npm run security:probe";
+
   console.info(
     "\n[vercel-setup] done. Two things worth running against the live instance:\n" +
-      "  npm run smoke                                   # 68 assertions against hosted Postgres\n" +
-      "  PROBE_BASE_URL=https://<domain> PROBE_ALLOW_REMOTE=1 npm run security:probe",
+      "  npm run smoke     # 68 assertions against hosted Postgres\n" +
+      `  ${probeHint}`,
   );
 }
 

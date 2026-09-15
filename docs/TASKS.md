@@ -146,7 +146,7 @@ design — Next serves overlays there and not in production.
 **The database is provisioned, migrated and seeded.** It is a Neon Lakebase Postgres created
 through the claimable-database flow, which needs no signup and no API key:
 
-```bash
+```powershell
 npx neon@latest claim create --service postgres --file .env.local
 ```
 
@@ -160,7 +160,7 @@ only PGlite had ever run these migrations.
 **72 hours**, is capped at 100 MB of storage and 1 GB of transfer, and then disappears.
 Claiming transfers it into your own Neon account and removes all three limits:
 
-```bash
+```powershell
 npx neon@latest claim accept          # opens a browser; sign in, pick a destination
 npx neon@latest claim status          # state, and the expiry to beat
 ```
@@ -172,8 +172,14 @@ changes when you claim it, so anything already deployed keeps working.
 it is interactive by construction — there is no flag that makes it otherwise, and a token
 pasted into a terminal is a credential in a shell history. Everything after it is scripted:
 
-```bash
-vercel login                 # the only interactive step
+```powershell
+# In a real PowerShell window, not through an agent: the CLI flips to --non-interactive when it
+# detects one, and the account picker needs arrow keys. `vercel` is not necessarily on PATH —
+# the npm global prefix here is D:
+pm-global.
+D:
+pm-globalercel.cmd login
+
 npm run vercel:setup         # link, push the three variables, deploy to production
 ```
 
@@ -188,10 +194,16 @@ answer with one that points every verification email at your laptop.
 
 Then verify against the live instance:
 
-```bash
-npm run smoke                                                               # against hosted Postgres
-PROBE_BASE_URL=https://<domain> PROBE_ALLOW_REMOTE=1 npm run security:probe  # 94 assertions
-DATABASE_URL=<…> npm run admin:grant -- you@example.com                      # to reach /admin
+```powershell
+# PowerShell has no inline env-var prefix — `VAR=x cmd` is a parse error, not an env-prefixed
+# run, and it fails quietly enough to look like the tool is broken. Assign, then call.
+npm run smoke                       # reads .env.local, so this is the hosted database
+
+$env:PROBE_BASE_URL   = "https://<domain>"
+$env:PROBE_ALLOW_REMOTE = "1"
+npm run security:probe              # 94 assertions
+
+npm run admin:grant -- you@example.com   # DATABASE_URL comes from .env.local; needed for /admin
 ```
 
 `npm run smoke` reads `.env.local`, so with `DATABASE_URL` set it now targets Neon rather than

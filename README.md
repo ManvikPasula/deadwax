@@ -78,15 +78,19 @@ one.
 
 ## Running it
 
-```bash
+```powershell
 npm install
-cp .env.example .env.local          # then set AUTH_SECRET
+Copy-Item .env.example .env.local   # then set AUTH_SECRET
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 npm run db:local                    # apply ./drizzle to a local PGlite store
 npm run seed                        # a demo community, through the normal ingest path
 npm run dev
 ```
+
+<sub>On macOS or Linux the only difference is `cp` for `Copy-Item`. `node -e` rather than
+`openssl rand -base64 32` because it is the one generator guaranteed present — this repo
+already depends on Node and not on OpenSSL being on PATH.</sub>
 
 **With no `DATABASE_URL` the app runs on [PGlite](https://pglite.dev) — a WebAssembly Postgres
 in a local directory.** Set `DATABASE_URL` and the same migrations, the same queries and the
@@ -240,7 +244,7 @@ needed in production and only the first is strictly required:
 There is no need to sign up for a database to get one. Neon's claimable flow provisions a
 Lakebase Postgres with no account and no API key, and you attach it to an account afterwards:
 
-```bash
+```powershell
 npx neon@latest claim create --service postgres --file .env.local   # writes DATABASE_URL
 npx neon@latest claim accept                                        # keep it: 72h otherwise
 ```
@@ -250,7 +254,7 @@ and changes nothing about the connection string.
 
 Then, once `vercel login` has been done — the one step that is interactive by construction:
 
-```bash
+```powershell
 npm run vercel:setup        # link, push DATABASE_URL / AUTH_SECRET / CRON_SECRET, deploy
 ```
 
